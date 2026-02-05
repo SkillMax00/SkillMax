@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "217378871309",
+    "project_id": "skillmax-e5b98",
+    "storage_bucket": "skillmax-e5b98.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:217378871309:android:26e28636355464f7971d44",
+        "android_client_info": {
+          "package_name": "com.example.skillmax"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "217378871309-n8g7sv3to7hov31gfd1dh6dn2vhpuems.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyANGcJEW-VcRsXxPEj0pvx_810WQP8CW5c"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "217378871309-n8g7sv3to7hov31gfd1dh6dn2vhpuems.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
