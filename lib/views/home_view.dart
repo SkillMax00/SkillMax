@@ -1,9 +1,12 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../controllers/subscription_controller.dart';
 
 class HomeView extends ConsumerStatefulWidget {
-  const HomeView({super.key});
+  const HomeView({required this.user, super.key});
+
+  final User user;
 
   @override
   ConsumerState<HomeView> createState() => _HomeViewState();
@@ -14,7 +17,9 @@ class _HomeViewState extends ConsumerState<HomeView> {
   void initState() {
     super.initState();
     Future.microtask(
-      () => ref.read(subscriptionControllerProvider.notifier).init(),
+      () => ref
+          .read(subscriptionControllerProvider.notifier)
+          .init(appUserId: widget.user.uid),
     );
   }
 
@@ -26,12 +31,27 @@ class _HomeViewState extends ConsumerState<HomeView> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('SkillMax'),
+        actions: [
+          IconButton(
+            onPressed: () async {
+              await ref.read(subscriptionControllerProvider.notifier).logOut();
+              await FirebaseAuth.instance.signOut();
+            },
+            icon: const Icon(Icons.logout),
+            tooltip: 'Sign out',
+          ),
+        ],
       ),
       body: Padding(
         padding: const EdgeInsets.all(20),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            Text(
+              widget.user.email ?? widget.user.uid,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 8),
             Text(
               state.isPremium ? 'Premium: ACTIVE' : 'Premium: INACTIVE',
               style: Theme.of(context).textTheme.titleLarge,

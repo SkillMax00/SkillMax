@@ -54,7 +54,20 @@ class SubscriptionController extends Notifier<SubscriptionState> {
   SubscriptionState build() => const SubscriptionState();
 
   Future<void> init({String? appUserId}) async {
-    if (state.isConfigured) return;
+    if (state.isConfigured) {
+      if (appUserId != null && appUserId.isNotEmpty) {
+        state = state.copyWith(isLoading: true, errorMessage: null);
+        try {
+          final result = await Purchases.logIn(appUserId);
+          _applyCustomerInfo(result.customerInfo);
+        } catch (e) {
+          state = state.copyWith(errorMessage: 'RevenueCat login failed: $e');
+        } finally {
+          state = state.copyWith(isLoading: false);
+        }
+      }
+      return;
+    }
     state = state.copyWith(isLoading: true, errorMessage: null);
 
     try {
