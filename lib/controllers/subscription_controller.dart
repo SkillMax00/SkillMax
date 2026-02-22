@@ -9,8 +9,9 @@ const String kRevenueCatApiKey = 'test_LDPhSNXbwKuEHFgFBNUtddJDkYT';
 const String kPremiumEntitlementId = 'SkillMax Premium';
 
 final subscriptionControllerProvider =
-  NotifierProvider<SubscriptionController, SubscriptionState>(
-    SubscriptionController.new);
+    NotifierProvider<SubscriptionController, SubscriptionState>(
+      SubscriptionController.new,
+    );
 
 @immutable
 class SubscriptionState {
@@ -87,9 +88,7 @@ class SubscriptionController extends Notifier<SubscriptionState> {
       state = state.copyWith(isConfigured: true);
       await refresh();
     } catch (e) {
-      state = state.copyWith(
-        errorMessage: 'RevenueCat init failed: $e',
-      );
+      state = state.copyWith(errorMessage: 'RevenueCat init failed: $e');
     } finally {
       state = state.copyWith(isLoading: false);
     }
@@ -121,12 +120,13 @@ class SubscriptionController extends Notifier<SubscriptionState> {
     }
   }
 
-  Future<void> showPaywall() async {
+  Future<PaywallResult> showPaywall() async {
     state = state.copyWith(errorMessage: null);
     try {
-      await RevenueCatUI.presentPaywall();
+      return await RevenueCatUI.presentPaywall();
     } catch (e) {
       state = state.copyWith(errorMessage: 'Paywall failed: $e');
+      return PaywallResult.error;
     }
   }
 
@@ -166,10 +166,7 @@ class SubscriptionController extends Notifier<SubscriptionState> {
 
   void _applyCustomerInfo(CustomerInfo info) {
     final isPremium =
-      info.entitlements.all[kPremiumEntitlementId]?.isActive == true;
-    state = state.copyWith(
-      customerInfo: info,
-      isPremium: isPremium,
-    );
+        info.entitlements.all[kPremiumEntitlementId]?.isActive == true;
+    state = state.copyWith(customerInfo: info, isPremium: isPremium);
   }
 }

@@ -2,7 +2,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../home_view.dart';
-import 'onboarding_paywall_view.dart';
+import 'welcome_view.dart';
 
 class AuthGate extends StatelessWidget {
   const AuthGate({super.key});
@@ -20,7 +20,7 @@ class AuthGate extends StatelessWidget {
 
         final user = snapshot.data;
         if (user == null) {
-          return const OnboardingPaywallView();
+          return const WelcomeView();
         }
 
         return HomeView(user: user);

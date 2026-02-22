@@ -47,8 +47,9 @@ class _SignUpViewState extends ConsumerState<SignUpView> {
       if (widget.showPaywallAfterSignUp) {
         final user = FirebaseAuth.instance.currentUser;
         if (user != null) {
-          final subscriptionController =
-              ref.read(subscriptionControllerProvider.notifier);
+          final subscriptionController = ref.read(
+            subscriptionControllerProvider.notifier,
+          );
           await subscriptionController.init(appUserId: user.uid);
           await subscriptionController.showPaywall();
           await subscriptionController.refresh();
@@ -56,14 +57,12 @@ class _SignUpViewState extends ConsumerState<SignUpView> {
       }
 
       if (mounted) {
-        Navigator.of(context).pop();
+        Navigator.of(context).pop(true);
       }
     } on FirebaseAuthException catch (e) {
       setState(() => _errorMessage = _firebaseErrorMessage(e));
     } catch (_) {
-      setState(
-        () => _errorMessage = 'Something went wrong. Please try again.',
-      );
+      setState(() => _errorMessage = 'Something went wrong. Please try again.');
     } finally {
       if (mounted) {
         setState(() => _isLoading = false);
