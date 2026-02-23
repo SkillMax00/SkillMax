@@ -16,6 +16,14 @@ class OnboardingProfile {
     this.workoutLength,
     this.birthDate,
     this.age,
+    this.baselinePush,
+    this.baselinePull,
+    this.baselineLegCore,
+    this.blockerReason,
+    this.adaptIfMissDay,
+    this.notificationsAllowed,
+    this.referralCode,
+    this.subscriptionStatus,
   });
 
   final String userId;
@@ -35,6 +43,14 @@ class OnboardingProfile {
   final String? workoutLength;
   final DateTime? birthDate;
   final int? age;
+  final String? baselinePush;
+  final String? baselinePull;
+  final String? baselineLegCore;
+  final String? blockerReason;
+  final bool? adaptIfMissDay;
+  final bool? notificationsAllowed;
+  final String? referralCode;
+  final String? subscriptionStatus;
 
   factory OnboardingProfile.fromOnboardingAnswers({
     required String userId,
@@ -83,6 +99,13 @@ class OnboardingProfile {
       workoutLength: answers['workout_length']?.toString(),
       birthDate: birthday,
       age: calculatedAge,
+      baselinePush: answers['baseline_push']?.toString(),
+      baselinePull: answers['baseline_pull']?.toString(),
+      baselineLegCore: answers['baseline_legs']?.toString(),
+      blockerReason: answers['barrier']?.toString(),
+      adaptIfMissDay: _yesNoToBool(answers['adapt_if_missed']),
+      notificationsAllowed: _allowToBool(answers['notifications']),
+      referralCode: _nullableText(answers['referral_code']),
     );
   }
 
@@ -104,6 +127,14 @@ class OnboardingProfile {
       'workoutLength': workoutLength,
       'birthDate': birthDate?.toIso8601String(),
       'age': age,
+      'baselinePush': baselinePush,
+      'baselinePull': baselinePull,
+      'baselineLegCore': baselineLegCore,
+      'blockerReason': blockerReason,
+      'adaptIfMissDay': adaptIfMissDay,
+      'notificationsAllowed': notificationsAllowed,
+      'referralCode': referralCode,
+      'subscriptionStatus': subscriptionStatus,
     };
   }
 
@@ -111,5 +142,26 @@ class OnboardingProfile {
     if (value == null) return null;
     if (value is num) return value.toDouble();
     return double.tryParse(value.toString());
+  }
+
+  static bool? _yesNoToBool(dynamic value) {
+    if (value == null) return null;
+    final text = value.toString().trim().toLowerCase();
+    if (text == 'yes') return true;
+    if (text == 'no') return false;
+    return null;
+  }
+
+  static bool? _allowToBool(dynamic value) {
+    if (value == null) return null;
+    final text = value.toString().trim().toLowerCase();
+    if (text == 'allow') return true;
+    if (text == "don't allow") return false;
+    return null;
+  }
+
+  static String? _nullableText(dynamic value) {
+    final text = value?.toString().trim() ?? '';
+    return text.isEmpty ? null : text;
   }
 }
