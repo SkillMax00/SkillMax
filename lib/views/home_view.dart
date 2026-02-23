@@ -8,14 +8,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../controllers/subscription_controller.dart';
 import '../models/training_plan.dart';
 import '../models/training_session_result.dart';
+import '../services/coach_chat_service.dart';
 import '../services/training_data_repository.dart';
 
-const _kBgBase = Color(0xFF0B0D12);
-const _kBgCard = Color(0xFF141826);
-const _kBgCardSoft = Color(0xFF101522);
-const _kAccent = Color(0xFFFF3B6A);
-const _kMuted = Color(0xFF98A0B5);
-const _kText = Color(0xFFF3F5FF);
+const _kBgBase = Color(0xFFF7FAFD);
+const _kBgCard = Color(0xFFFFFFFF);
+const _kBgCardSoft = Color(0xFFF1F6FA);
+const _kAccent = Color(0xFF1E628C);
+const _kMuted = Color(0xFF6F8494);
+const _kText = Color(0xFF112331);
 
 class HomeView extends ConsumerStatefulWidget {
   const HomeView({required this.user, super.key});
@@ -28,6 +29,7 @@ class HomeView extends ConsumerStatefulWidget {
 
 class _HomeViewState extends ConsumerState<HomeView> {
   final TrainingDataRepository _repository = TrainingDataRepository();
+  final CoachChatService _coachService = CoachChatService();
   final TextEditingController _coachInputController = TextEditingController();
 
   int _tabIndex = 0;
@@ -76,7 +78,7 @@ class _HomeViewState extends ConsumerState<HomeView> {
           gradient: LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: <Color>[Color(0x331F2450), Color(0x110C1323), _kBgBase],
+            colors: <Color>[Color(0x0D1E628C), Color(0x051E628C), _kBgBase],
           ),
         ),
         child: SafeArea(
@@ -129,6 +131,7 @@ class _HomeViewState extends ConsumerState<HomeView> {
                         index: _tabIndex,
                         subState: subState,
                         subController: subController,
+                        plan: plan,
                         profileMap: profileMap,
                         workoutData: workoutData,
                         today: currentDay,
@@ -165,6 +168,9 @@ class _HomeViewState extends ConsumerState<HomeView> {
                                   workoutData,
                                   subController,
                                   subState,
+                                  profileMap,
+                                  plan,
+                                  sessions,
                                 );
                               },
                             ),
@@ -191,6 +197,7 @@ class _HomeViewState extends ConsumerState<HomeView> {
     required int index,
     required SubscriptionState subState,
     required SubscriptionController subController,
+    required TrainingPlan? plan,
     required Map<String, dynamic> profileMap,
     required _WorkoutData workoutData,
     required _WorkoutDayUi today,
@@ -224,7 +231,12 @@ class _HomeViewState extends ConsumerState<HomeView> {
           await subController.showPaywall();
           await subController.refresh();
         },
-        onSettingsTap: subController.showCustomerCenter,
+        onSettingsTap: () => _openSettingsScreen(
+          context,
+          profileMap: profileMap,
+          subState: subState,
+          subController: subController,
+        ),
         onSignOutTap: () async {
           await subController.logOut();
           await FirebaseAuth.instance.signOut();
@@ -246,13 +258,28 @@ class _HomeViewState extends ConsumerState<HomeView> {
           _weekOverride = adapted;
           _showNoAdaptBanner = false;
         });
+        if (plan != null) {
+          _persistWeekToPlan(plan, adapted);
+        }
       },
       onKeepSchedule: () => setState(() => _showNoAdaptBanner = false),
-      onOpenMenu: () => _showWorkoutMenu(context),
+      onOpenMenu: () => _showWorkoutMenu(
+        context,
+        workoutData: workoutData,
+        plan: plan,
+        profileMap: profileMap,
+        sessions: sessions,
+        subController: subController,
+        subState: subState,
+      ),
       onSwapTap: () {
+        final swapped = _swapWorkout(today, workoutData);
         setState(() {
-          _todayOverride = _swapWorkout(today, workoutData);
+          _todayOverride = swapped;
         });
+        if (plan != null) {
+          _persistTodayToPlan(plan, swapped);
+        }
       },
       onPickLength: () => _showSimplePicker(
         context,
@@ -273,6 +300,8 @@ class _HomeViewState extends ConsumerState<HomeView> {
         today: today,
         subState: subState,
         subController: subController,
+        plan: plan,
+        allDays: workoutData.weekDays,
       ),
     );
   }
@@ -311,8 +340,9 @@ class _HomeViewState extends ConsumerState<HomeView> {
     if (adaptIfMissed && missed.isNotEmpty && _weekOverride == null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
+        final adapted = _adaptWeekDays(weekDays);
         setState(() {
-          _weekOverride = _adaptWeekDays(weekDays);
+          _weekOverride = adapted;
           _coachMessages = <_CoachMessage>[
             const _CoachMessage(
               text:
@@ -322,6 +352,9 @@ class _HomeViewState extends ConsumerState<HomeView> {
             ..._coachMessages,
           ];
         });
+        if (plan != null) {
+          _persistWeekToPlan(plan, adapted);
+        }
       });
     }
 
@@ -344,6 +377,39 @@ class _HomeViewState extends ConsumerState<HomeView> {
     required List<_WorkoutLogUi> sessions,
     required bool isPremium,
   }) {
+    if (plan?.workoutDays.isNotEmpty == true) {
+      final stored = plan!.workoutDays.toList(growable: true)
+        ..sort((a, b) => a.date.compareTo(b.date));
+
+      return List<_WorkoutDayUi>.generate(stored.length, (index) {
+        final day = stored[index];
+        final completed = sessions.any((log) => _isSameDay(log.completedAt, day.date));
+        final status = completed
+            ? _WorkoutStatus.completed
+            : _isMissed(day.date)
+                ? _WorkoutStatus.missed
+                : _WorkoutStatus.scheduled;
+        return _WorkoutDayUi(
+          date: day.date,
+          type: day.type,
+          estimatedMinutes: day.estimatedMinutes,
+          exercises: day.exercises
+              .map(
+                (e) => _ExerciseUi(
+                  name: e.name,
+                  sets: e.sets,
+                  reps: e.reps,
+                  level: e.progressionLevel,
+                  category: e.category,
+                ),
+              )
+              .toList(growable: false),
+          status: status,
+          isLocked: !isPremium && index > 0,
+        );
+      });
+    }
+
     final skills = (profileMap['skills'] as List<dynamic>? ?? const <dynamic>[])
         .map((e) => e.toString())
         .toList(growable: false);
@@ -529,6 +595,8 @@ class _HomeViewState extends ConsumerState<HomeView> {
     required _WorkoutDayUi today,
     required SubscriptionState subState,
     required SubscriptionController subController,
+    required TrainingPlan? plan,
+    required List<_WorkoutDayUi> allDays,
   }) async {
     if (today.isLocked && !subState.isPremium) {
       await subController.showPaywall();
@@ -560,6 +628,16 @@ class _HomeViewState extends ConsumerState<HomeView> {
               notes: 'Completed via dashboard player',
             );
             await _repository.saveSessionResult(result);
+            if (plan != null) {
+              final completedDays = allDays
+                  .map(
+                    (day) => _isSameDay(day.date, today.date)
+                        ? day.copyWith(status: _WorkoutStatus.completed)
+                        : day,
+                  )
+                  .toList(growable: false);
+              await _persistWeekToPlan(plan, completedDays);
+            }
             if (!mounted) return;
             Navigator.of(this.context).pop();
             ScaffoldMessenger.of(this.context).showSnackBar(
@@ -576,6 +654,9 @@ class _HomeViewState extends ConsumerState<HomeView> {
     _WorkoutData workoutData,
     SubscriptionController subController,
     SubscriptionState subState,
+    Map<String, dynamic> profileMap,
+    TrainingPlan? plan,
+    List<_WorkoutLogUi> sessions,
   ) async {
     await showModalBottomSheet<void>(
       context: context,
@@ -596,7 +677,13 @@ class _HomeViewState extends ConsumerState<HomeView> {
                 ];
               });
 
-              final response = _coachRespond(text.trim(), workoutData);
+              final response = await _coachRespondFromApi(
+                text.trim(),
+                workoutData,
+                profileMap,
+                plan,
+                sessions,
+              );
 
               setSheetState(() {
                 _coachMessages = <_CoachMessage>[
@@ -627,7 +714,7 @@ class _HomeViewState extends ConsumerState<HomeView> {
                         height: 4,
                         margin: const EdgeInsets.only(bottom: 14),
                         decoration: BoxDecoration(
-                          color: const Color(0xFF4D5770),
+                          color: const Color(0xFFB4C8D8),
                           borderRadius: BorderRadius.circular(99),
                         ),
                       ),
@@ -680,12 +767,12 @@ class _HomeViewState extends ConsumerState<HomeView> {
                                 ),
                                 decoration: BoxDecoration(
                                   color: message.fromCoach
-                                      ? const Color(0xFF1A2134)
+                                      ? const Color(0xFFF2F7FB)
                                       : _kAccent.withValues(alpha: 0.22),
                                   borderRadius: BorderRadius.circular(14),
                                   border: Border.all(
                                     color: message.fromCoach
-                                        ? const Color(0xFF2A3550)
+                                        ? const Color(0xFFD5E4EF)
                                         : _kAccent.withValues(alpha: 0.4),
                                   ),
                                 ),
@@ -702,7 +789,7 @@ class _HomeViewState extends ConsumerState<HomeView> {
                         _PlanChangeCard(
                           preview: _pendingChange!,
                           onApply: () {
-                            _applyPlanChange(_pendingChange!, workoutData);
+                            _applyPlanChange(_pendingChange!, workoutData, plan);
                             setSheetState(() {
                               _coachMessages = <_CoachMessage>[
                                 ..._coachMessages,
@@ -742,7 +829,7 @@ class _HomeViewState extends ConsumerState<HomeView> {
                                 hintText: 'Ask Coach...',
                                 hintStyle: const TextStyle(color: _kMuted),
                                 filled: true,
-                                fillColor: const Color(0xFF10182A),
+                                fillColor: const Color(0xFFF4F8FC),
                                 border: OutlineInputBorder(
                                   borderRadius: BorderRadius.circular(16),
                                   borderSide: BorderSide.none,
@@ -783,7 +870,84 @@ class _HomeViewState extends ConsumerState<HomeView> {
     }
   }
 
-  _CoachResponse _coachRespond(String input, _WorkoutData data) {
+  Future<_CoachResponse> _coachRespondFromApi(
+    String input,
+    _WorkoutData data,
+    Map<String, dynamic> profileMap,
+    TrainingPlan? plan,
+    List<_WorkoutLogUi> sessions,
+  ) async {
+    final user = FirebaseAuth.instance.currentUser;
+    final idToken = await user?.getIdToken();
+    if (idToken == null || !_coachService.hasFunctionUrl) {
+      return _coachRespondFallback(input, data);
+    }
+
+    final contextPayload = <String, dynamic>{
+      'profile': profileMap,
+      'plan': plan?.toMap(),
+      'todayWorkout': _toWorkoutDayMap(data.today),
+      'recentLogs': sessions
+          .take(5)
+          .map(
+            (e) => <String, dynamic>{
+              'completedAt': e.completedAt.toIso8601String(),
+              'durationMinutes': e.durationMinutes,
+              'title': e.title,
+              'prHighlight': e.prHighlight,
+            },
+          )
+          .toList(growable: false),
+    };
+
+    final apiResult = await _coachService.chat(
+      message: input,
+      idToken: idToken,
+      context: contextPayload,
+    );
+    if (apiResult == null) {
+      return _coachRespondFallback(input, data);
+    }
+
+    final planAction = apiResult.proposedPlanDiff?['action']?.toString() ?? 'none';
+    final workoutAction =
+        apiResult.proposedWorkoutEdits?['action']?.toString() ?? 'none';
+
+    _ChangeType? applyType;
+    if (planAction == 'adapt_week') {
+      applyType = _ChangeType.adaptWeek;
+    } else if (workoutAction == 'ease_today') {
+      applyType = _ChangeType.easeToday;
+    } else if (workoutAction == 'swap_today') {
+      applyType = _ChangeType.swapToday;
+    }
+
+    if (applyType == null) {
+      return _CoachResponse(message: apiResult.message, preview: null);
+    }
+
+    final before = apiResult.proposedPlanDiff?['before']?.toString() ??
+        apiResult.proposedWorkoutEdits?['before']?.toString() ??
+        'Current setup';
+    final after = apiResult.proposedPlanDiff?['after']?.toString() ??
+        apiResult.proposedWorkoutEdits?['summary']?.toString() ??
+        'Updated setup';
+    final title = apiResult.proposedPlanDiff?['notes']?.toString() ??
+        apiResult.proposedWorkoutEdits?['summary']?.toString() ??
+        'Coach update';
+
+    return _CoachResponse(
+      message: apiResult.message,
+      preview: _PlanChangePreview(
+        title: title,
+        before: before,
+        after: after,
+        applyType: applyType,
+      ),
+    );
+  }
+
+  _CoachResponse _coachRespondFallback(String input, _WorkoutData data) {
     final text = input.toLowerCase();
 
     if (text.contains('missed')) {
@@ -829,9 +993,17 @@ class _HomeViewState extends ConsumerState<HomeView> {
     );
   }
 
-  void _applyPlanChange(_PlanChangePreview preview, _WorkoutData data) {
+  void _applyPlanChange(
+    _PlanChangePreview preview,
+    _WorkoutData data,
+    TrainingPlan? plan,
+  ) {
     if (preview.applyType == _ChangeType.adaptWeek) {
-      setState(() => _weekOverride = _adaptWeekDays(data.weekDays));
+      final adapted = _adaptWeekDays(data.weekDays);
+      setState(() => _weekOverride = adapted);
+      if (plan != null) {
+        _persistWeekToPlan(plan, adapted);
+      }
       return;
     }
 
@@ -847,6 +1019,9 @@ class _HomeViewState extends ConsumerState<HomeView> {
             .toList(growable: false),
       );
       setState(() => _todayOverride = eased);
+      if (plan != null) {
+        _persistTodayToPlan(plan, eased);
+      }
       return;
     }
 
@@ -876,9 +1051,20 @@ class _HomeViewState extends ConsumerState<HomeView> {
       ],
     );
     setState(() => _todayOverride = swapped);
+    if (plan != null) {
+      _persistTodayToPlan(plan, swapped);
+    }
   }
 
-  void _showWorkoutMenu(BuildContext context) {
+  void _showWorkoutMenu(
+    BuildContext context, {
+    required _WorkoutData workoutData,
+    required TrainingPlan? plan,
+    required Map<String, dynamic> profileMap,
+    required List<_WorkoutLogUi> sessions,
+    required SubscriptionController subController,
+    required SubscriptionState subState,
+  }) {
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: _kBgCard,
@@ -908,21 +1094,19 @@ class _HomeViewState extends ConsumerState<HomeView> {
                   if (items[index] == 'Ask AI Coach') {
                     _openCoach(
                       this.context,
-                      _buildWorkoutData(
-                        profileMap: const <String, dynamic>{},
-                        plan: null,
-                        sessions: const <_WorkoutLogUi>[],
-                        isPremium: ref.read(subscriptionControllerProvider).isPremium,
-                      ),
-                      ref.read(subscriptionControllerProvider.notifier),
-                      ref.read(subscriptionControllerProvider),
+                      workoutData,
+                      subController,
+                      subState,
+                      profileMap,
+                      plan,
+                      sessions,
                     );
                   }
                 },
               );
             },
             separatorBuilder: (context, index) =>
-                const Divider(color: Color(0xFF252E45), height: 1),
+                const Divider(color: Color(0xFFE2ECF3), height: 1),
             itemCount: items.length,
           ),
         );
@@ -1130,6 +1314,144 @@ class _HomeViewState extends ConsumerState<HomeView> {
           return TrainingPlan.fromMap(query.docs.first.data());
         });
   }
+
+  Future<void> _openSettingsScreen(
+    BuildContext context, {
+    required Map<String, dynamic> profileMap,
+    required SubscriptionState subState,
+    required SubscriptionController subController,
+  }) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => _AccountSettingsView(
+          user: widget.user,
+          profileMap: profileMap,
+          isPremium: subState.isPremium,
+          onManageMembership: () async {
+            await subController.showCustomerCenter();
+            await subController.refresh();
+          },
+          onSignOut: () async {
+            await subController.logOut();
+            await FirebaseAuth.instance.signOut();
+          },
+        ),
+      ),
+    );
+  }
+
+  Future<void> _persistWeekToPlan(
+    TrainingPlan plan,
+    List<_WorkoutDayUi> weekDays,
+  ) async {
+    final updated = _copyPlanWithUpdatedDays(plan, weekDays);
+    await _repository.saveTrainingPlan(widget.user.uid, updated);
+  }
+
+  Future<void> _persistTodayToPlan(TrainingPlan plan, _WorkoutDayUi today) async {
+    final baseline = _weekOverride ??
+        _buildWeekDays(
+          weekStart: _startOfWeek(DateTime.now()),
+          profileMap: const <String, dynamic>{},
+          plan: plan,
+          sessions: const <_WorkoutLogUi>[],
+          isPremium: true,
+        );
+    final next = baseline
+        .map((d) => _isSameDay(d.date, today.date) ? today : d)
+        .toList(growable: false);
+    final updated = _copyPlanWithUpdatedDays(plan, next);
+    await _repository.saveTrainingPlan(widget.user.uid, updated);
+  }
+
+  TrainingPlan _copyPlanWithUpdatedDays(
+    TrainingPlan base,
+    List<_WorkoutDayUi> days,
+  ) {
+    final sorted = days.toList(growable: true)..sort((a, b) => a.date.compareTo(b.date));
+    return TrainingPlan(
+      id: base.id,
+      userId: base.userId,
+      createdAt: base.createdAt,
+      daysPerWeek: base.daysPerWeek,
+      workoutLength: base.workoutLength,
+      weeklySplit: sorted.map((e) => e.type).toList(growable: false),
+      skillTrack: base.skillTrack,
+      blocks: base.blocks,
+      generator: base.generator,
+      activeWeekStartDate: sorted.isEmpty ? base.activeWeekStartDate : _startOfWeek(sorted.first.date),
+      scheduleDays: sorted
+          .map(
+            (e) => PlanScheduleDay(
+              date: e.date,
+              type: e.type,
+              status: switch (e.status) {
+                _WorkoutStatus.completed => 'completed',
+                _WorkoutStatus.missed => 'missed',
+                _WorkoutStatus.scheduled => 'scheduled',
+              },
+            ),
+          )
+          .toList(growable: false),
+      skillTracks: base.skillTracks,
+      volumeTargets: base.volumeTargets,
+      progressionRules: base.progressionRules,
+      workoutDays: sorted
+          .map(
+            (e) => WorkoutDayPlan(
+              date: e.date,
+              type: e.type,
+              estimatedMinutes: e.estimatedMinutes,
+              status: switch (e.status) {
+                _WorkoutStatus.completed => 'completed',
+                _WorkoutStatus.missed => 'missed',
+                _WorkoutStatus.scheduled => 'scheduled',
+              },
+              exercises: e.exercises
+                  .asMap()
+                  .entries
+                  .map(
+                    (entry) => WorkoutExercise(
+                      id: '${e.type}_${entry.key}',
+                      name: entry.value.name,
+                      category: entry.value.category,
+                      progressionLevel: entry.value.level,
+                      sets: entry.value.sets,
+                      reps: entry.value.reps,
+                      restSeconds: 90,
+                      altExercises: const <String>[],
+                    ),
+                  )
+                  .toList(growable: false),
+            ),
+          )
+          .toList(growable: false),
+    );
+  }
+
+  Map<String, dynamic> _toWorkoutDayMap(_WorkoutDayUi day) {
+    return <String, dynamic>{
+      'date': day.date.toIso8601String(),
+      'type': day.type,
+      'estimatedMinutes': day.estimatedMinutes,
+      'status': switch (day.status) {
+        _WorkoutStatus.completed => 'completed',
+        _WorkoutStatus.missed => 'missed',
+        _WorkoutStatus.scheduled => 'scheduled',
+      },
+      'exercises': day.exercises
+          .map(
+            (e) => <String, dynamic>{
+              'name': e.name,
+              'sets': e.sets,
+              'reps': e.reps,
+              'level': e.level,
+              'category': e.category,
+            },
+          )
+          .toList(growable: false),
+    };
+  }
 }
 
 class _WorkoutTab extends StatelessWidget {
@@ -1185,7 +1507,7 @@ class _WorkoutTab extends StatelessWidget {
               children: [
                 CircleAvatar(
                   radius: 18,
-                  backgroundColor: const Color(0xFF212A40),
+                  backgroundColor: const Color(0xFFE6F0F7),
                   child: Text(
                     firstName.isEmpty ? 'S' : firstName[0].toUpperCase(),
                     style: const TextStyle(color: _kText, fontWeight: FontWeight.w700),
@@ -1397,7 +1719,7 @@ class _BodyTab extends StatelessWidget {
                     decoration: BoxDecoration(
                       color: index == carouselIndex
                           ? _kAccent
-                          : const Color(0xFF3A4158),
+                          : const Color(0xFFB8CCD9),
                       shape: BoxShape.circle,
                     ),
                   );
@@ -1492,7 +1814,7 @@ class _TargetsTab extends StatelessWidget {
                     onPressed: () {},
                     style: OutlinedButton.styleFrom(
                       foregroundColor: _kAccent,
-                      side: const BorderSide(color: Color(0xFF323B53)),
+                      side: const BorderSide(color: Color(0xFFC9DCE8)),
                       minimumSize: const Size.fromHeight(50),
                     ),
                     child: const Text('Adjust targets'),
@@ -1596,8 +1918,8 @@ class _LogTab extends StatelessWidget {
                   child: OutlinedButton.icon(
                     onPressed: onSignOutTap,
                     style: OutlinedButton.styleFrom(
-                      foregroundColor: const Color(0xFFD0D7E9),
-                      side: const BorderSide(color: Color(0xFF38445F)),
+                      foregroundColor: const Color(0xFF1E628C),
+                      side: const BorderSide(color: Color(0xFFC9DCE8)),
                       minimumSize: const Size.fromHeight(50),
                     ),
                     icon: const Icon(Icons.logout_rounded),
@@ -1655,7 +1977,7 @@ class _TimelineWorkoutList extends StatelessWidget {
       decoration: BoxDecoration(
         color: _kBgCard,
         borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: const Color(0xFF262E42)),
+        border: Border.all(color: const Color(0xFFD8E7F1)),
       ),
       padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
       child: Column(
@@ -1685,7 +2007,7 @@ class _TimelineWorkoutList extends StatelessWidget {
                   child: Container(
                     height: 64,
                     decoration: BoxDecoration(
-                      color: const Color(0xFF171F33),
+                      color: const Color(0xFFEFF6FB),
                       borderRadius: BorderRadius.circular(14),
                     ),
                     child: Row(
@@ -1698,7 +2020,7 @@ class _TimelineWorkoutList extends StatelessWidget {
                             height: 10,
                             margin: const EdgeInsets.only(right: 14),
                             decoration: BoxDecoration(
-                              color: const Color(0xFF2A334A),
+                              color: const Color(0xFFD0DFEA),
                               borderRadius: BorderRadius.circular(10),
                             ),
                           ),
@@ -1751,9 +2073,9 @@ class _ExerciseRowState extends State<_ExerciseRow> {
           child: Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: const Color(0xFF10192A),
+              color: const Color(0xFFFFFFFF),
               borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: const Color(0xFF2A344A)),
+              border: Border.all(color: const Color(0xFFD6E6F0)),
             ),
             child: Row(
               children: [
@@ -1761,7 +2083,7 @@ class _ExerciseRowState extends State<_ExerciseRow> {
                   width: 54,
                   height: 54,
                   decoration: BoxDecoration(
-                    color: const Color(0xFF1F2941),
+                    color: const Color(0xFFEAF3F9),
                     borderRadius: BorderRadius.circular(12),
                   ),
                   alignment: Alignment.center,
@@ -1832,8 +2154,8 @@ class _BottomTabBar extends StatelessWidget {
 
     return Container(
       decoration: const BoxDecoration(
-        color: Color(0xFF0D1220),
-        border: Border(top: BorderSide(color: Color(0xFF1F2740))),
+        color: Color(0xFFFFFFFF),
+        border: Border(top: BorderSide(color: Color(0xFFE2ECF3))),
       ),
       padding: const EdgeInsets.fromLTRB(8, 10, 8, 10),
       child: Row(
@@ -1850,13 +2172,13 @@ class _BottomTabBar extends StatelessWidget {
                   children: [
                     Icon(
                       items[i].$1,
-                      color: selected ? _kAccent : const Color(0xFF6C748C),
+                      color: selected ? _kAccent : const Color(0xFF7290A5),
                     ),
                     const SizedBox(height: 4),
                     Text(
                       items[i].$2,
                       style: TextStyle(
-                        color: selected ? _kAccent : const Color(0xFF6C748C),
+                        color: selected ? _kAccent : const Color(0xFF7290A5),
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
                       ),
@@ -1905,7 +2227,7 @@ class _UnlockBanner extends StatelessWidget {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(16),
             gradient: const LinearGradient(
-              colors: <Color>[Color(0xFFFF3E6F), Color(0xFFFF5A8F)],
+              colors: <Color>[Color(0xFF1E628C), Color(0xFF2E79A8)],
             ),
           ),
           child: const Row(
@@ -1922,7 +2244,7 @@ class _UnlockBanner extends StatelessWidget {
                     ),
                     Text(
                       'With a free 7-day trial',
-                      style: TextStyle(color: Color(0xFFFDEAF0), fontSize: 12),
+                      style: TextStyle(color: Color(0xFFE7F3FB), fontSize: 12),
                     ),
                   ],
                 ),
@@ -1955,7 +2277,7 @@ class _WorkoutPlayerSheet extends StatelessWidget {
             height: 4,
             margin: const EdgeInsets.only(bottom: 12),
             decoration: BoxDecoration(
-              color: const Color(0xFF4A546D),
+              color: const Color(0xFFB4C8D8),
               borderRadius: BorderRadius.circular(99),
             ),
           ),
@@ -1978,7 +2300,7 @@ class _WorkoutPlayerSheet extends StatelessWidget {
               child: Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF111B2D),
+                  color: const Color(0xFFF4F8FC),
                   borderRadius: BorderRadius.circular(14),
                 ),
                 child: Row(
@@ -2033,7 +2355,7 @@ class _PillButton extends StatelessWidget {
       child: Ink(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
         decoration: BoxDecoration(
-          color: const Color(0xFF1A2237),
+          color: const Color(0xFFEDF5FA),
           borderRadius: BorderRadius.circular(99),
         ),
         child: Row(
@@ -2063,7 +2385,7 @@ class _DropdownPill extends StatelessWidget {
       child: Ink(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
         decoration: BoxDecoration(
-          color: const Color(0xFF1A2338),
+          color: const Color(0xFFEDF5FA),
           borderRadius: BorderRadius.circular(99),
         ),
         child: Row(
@@ -2097,7 +2419,7 @@ class _MissedBanner extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: const Color(0xFF1B2438),
+        color: const Color(0xFFEFF6FB),
         borderRadius: BorderRadius.circular(18),
       ),
       child: Column(
@@ -2121,7 +2443,7 @@ class _MissedBanner extends StatelessWidget {
                   onPressed: onKeep,
                   style: OutlinedButton.styleFrom(
                     foregroundColor: _kMuted,
-                    side: const BorderSide(color: Color(0xFF3A4664)),
+                    side: const BorderSide(color: Color(0xFFC8DBE8)),
                   ),
                   child: const Text('Keep as is'),
                 ),
@@ -2150,9 +2472,9 @@ class _QuickChip extends StatelessWidget {
         child: Ink(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           decoration: BoxDecoration(
-            color: const Color(0xFF1A2339),
+            color: const Color(0xFFEFF6FB),
             borderRadius: BorderRadius.circular(99),
-            border: Border.all(color: const Color(0xFF2D3955)),
+            border: Border.all(color: const Color(0xFFCDE0EC)),
           ),
           child: Text(text, style: const TextStyle(color: _kText, fontSize: 12)),
         ),
@@ -2179,9 +2501,9 @@ class _PlanChangeCard extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: const Color(0xFF111A2C),
+        color: const Color(0xFFF4F8FC),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFF2C3751)),
+        border: Border.all(color: const Color(0xFFD4E4EF)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2192,7 +2514,7 @@ class _PlanChangeCard extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           Text('Before: ${preview.before}', style: const TextStyle(color: _kMuted)),
-          Text('After: ${preview.after}', style: const TextStyle(color: Color(0xFFCED7EF))),
+          Text('After: ${preview.after}', style: const TextStyle(color: Color(0xFF3B5F79))),
           const SizedBox(height: 10),
           Row(
             children: [
@@ -2206,7 +2528,7 @@ class _PlanChangeCard extends StatelessWidget {
                 onPressed: onUndo,
                 style: OutlinedButton.styleFrom(
                   foregroundColor: _kMuted,
-                  side: const BorderSide(color: Color(0xFF3A4662)),
+                  side: const BorderSide(color: Color(0xFFC8DBE8)),
                 ),
                 child: const Text('Undo'),
               ),
@@ -2236,7 +2558,7 @@ class _SegmentControl extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(4),
       decoration: BoxDecoration(
-        color: const Color(0xFF141C2E),
+        color: const Color(0xFFEAF3F9),
         borderRadius: BorderRadius.circular(99),
       ),
       child: Row(
@@ -2305,7 +2627,7 @@ class _ScoreCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: _kBgCard,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: const Color(0xFF283146)),
+        border: Border.all(color: const Color(0xFFD3E4EF)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2372,7 +2694,7 @@ class _GhostBars extends StatelessWidget {
           margin: const EdgeInsets.only(bottom: 8),
           height: 8,
           decoration: BoxDecoration(
-            color: const Color(0xFF2A334A),
+            color: const Color(0xFFD0DFEA),
             borderRadius: BorderRadius.circular(8),
           ),
         ),
@@ -2396,7 +2718,7 @@ class _FocusExerciseCard extends StatelessWidget {
         gradient: const LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: <Color>[Color(0xFF242E45), Color(0xFF131B2D)],
+          colors: <Color>[Color(0xFFEAF3F9), Color(0xFFF4F8FC)],
         ),
       ),
       padding: const EdgeInsets.all(16),
@@ -2406,7 +2728,7 @@ class _FocusExerciseCard extends StatelessWidget {
           Text(
             exercise.name.toUpperCase(),
             style: const TextStyle(
-              color: Color(0xFFD5DDF1),
+              color: Color(0xFF35556D),
               fontWeight: FontWeight.w700,
               fontSize: 12,
               letterSpacing: 0.4,
@@ -2482,7 +2804,7 @@ class _RecoveryCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: _kBgCard,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: const Color(0xFF29334A)),
+        border: Border.all(color: const Color(0xFFD4E5F0)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2533,7 +2855,7 @@ class _TinyChip extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
       decoration: BoxDecoration(
-        color: const Color(0xFF182036),
+        color: const Color(0xFFEFF6FB),
         borderRadius: BorderRadius.circular(99),
       ),
       child: Text(text, style: const TextStyle(color: _kText, fontSize: 12)),
@@ -2629,7 +2951,7 @@ class _HexPainter extends CustomPainter {
     final radius = size.width * 0.34;
 
     final track = Paint()
-      ..color = const Color(0xFF2B3348)
+      ..color = const Color(0xFFD6E6F0)
       ..strokeWidth = 12
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round;
@@ -2637,12 +2959,12 @@ class _HexPainter extends CustomPainter {
     final fill = Paint()
       ..shader = const LinearGradient(
         colors: <Color>[
-          Color(0xFF5F6B8A),
-          Color(0xFFFF3B6A),
-          Color(0xFF6E7AA1),
-          Color(0xFF8A6B9F),
-          Color(0xFF7288A3),
-          Color(0xFFFA658A),
+          Color(0xFF9FC2D8),
+          Color(0xFF1E628C),
+          Color(0xFF8FB4CC),
+          Color(0xFF8AB0CA),
+          Color(0xFF7EABC8),
+          Color(0xFF2C78A8),
         ],
       ).createShader(Rect.fromCircle(center: center, radius: radius + 24))
       ..strokeWidth = 12
@@ -2711,7 +3033,7 @@ class _TargetRow extends StatelessWidget {
           LinearProgressIndicator(
             value: ratio,
             color: _kAccent,
-            backgroundColor: const Color(0xFF303A52),
+            backgroundColor: const Color(0xFFD4E5F0),
             minHeight: 7,
             borderRadius: BorderRadius.circular(99),
           ),
@@ -2798,7 +3120,7 @@ class _PromoCard extends StatelessWidget {
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(16),
-          gradient: const LinearGradient(colors: <Color>[Color(0xFF1D2843), Color(0xFF2B3755)]),
+          gradient: const LinearGradient(colors: <Color>[Color(0xFFEAF3F9), Color(0xFFDDECF6)]),
         ),
         child: const Row(
           children: [
@@ -2876,7 +3198,7 @@ class _CalendarCard extends StatelessWidget {
                           width: 6,
                           height: 6,
                           decoration: BoxDecoration(
-                            color: completed ? _kAccent : const Color(0x334E566D),
+                            color: completed ? _kAccent : const Color(0x336F8EA5),
                             shape: BoxShape.circle,
                           ),
                         ),
@@ -3136,5 +3458,380 @@ class _WorkoutLogUi {
       title: map['title']?.toString() ?? 'Skill Session',
       prHighlight: pain <= 2 ? 'Great form day' : 'Kept it controlled',
     );
+  }
+}
+
+class _AccountSettingsView extends StatefulWidget {
+  const _AccountSettingsView({
+    required this.user,
+    required this.profileMap,
+    required this.isPremium,
+    required this.onManageMembership,
+    required this.onSignOut,
+  });
+
+  final User user;
+  final Map<String, dynamic> profileMap;
+  final bool isPremium;
+  final Future<void> Function() onManageMembership;
+  final Future<void> Function() onSignOut;
+
+  @override
+  State<_AccountSettingsView> createState() => _AccountSettingsViewState();
+}
+
+class _AccountSettingsViewState extends State<_AccountSettingsView> {
+  late final TextEditingController _emailController;
+  final TextEditingController _passwordController = TextEditingController();
+  DateTime? _birthday;
+  bool _savingEmail = false;
+  bool _savingPassword = false;
+  bool _savingBirthday = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _emailController = TextEditingController(text: widget.user.email ?? '');
+
+    final birthRaw =
+        widget.profileMap['birthDate'] ?? widget.profileMap['birthday'];
+    _birthday = DateTime.tryParse(birthRaw?.toString() ?? '');
+  }
+
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF7FAFD),
+      appBar: AppBar(
+        title: const Text('Settings'),
+        backgroundColor: Colors.white,
+      ),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+        children: [
+          _settingsCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Account',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF112331),
+                    fontSize: 18,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                _fieldLabel('Email'),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: _emailController,
+                  keyboardType: TextInputType.emailAddress,
+                  decoration: _inputDecoration('name@example.com'),
+                ),
+                const SizedBox(height: 8),
+                _actionButton(
+                  label: _savingEmail ? 'Updating...' : 'Update Email',
+                  busy: _savingEmail,
+                  onTap: _updateEmail,
+                ),
+                const SizedBox(height: 14),
+                _fieldLabel('Password'),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: _passwordController,
+                  obscureText: true,
+                  decoration: _inputDecoration('New password (min 6 chars)'),
+                ),
+                const SizedBox(height: 8),
+                _actionButton(
+                  label: _savingPassword ? 'Updating...' : 'Update Password',
+                  busy: _savingPassword,
+                  onTap: _updatePassword,
+                ),
+                const SizedBox(height: 14),
+                _fieldLabel('Birthday'),
+                const SizedBox(height: 6),
+                InkWell(
+                  onTap: _pickBirthday,
+                  borderRadius: BorderRadius.circular(12),
+                  child: Ink(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 13,
+                    ),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: const Color(0xFFD6E6F0)),
+                      color: Colors.white,
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            _birthday == null
+                                ? 'Select birthday'
+                                : '${_birthday!.year}-${_birthday!.month.toString().padLeft(2, '0')}-${_birthday!.day.toString().padLeft(2, '0')}',
+                            style: const TextStyle(color: Color(0xFF1E3342)),
+                          ),
+                        ),
+                        const Icon(
+                          Icons.calendar_month_rounded,
+                          color: Color(0xFF6F8494),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                _actionButton(
+                  label: _savingBirthday ? 'Saving...' : 'Save Birthday',
+                  busy: _savingBirthday,
+                  onTap: _saveBirthday,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+          _settingsCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Membership',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF112331),
+                    fontSize: 18,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Container(
+                      width: 9,
+                      height: 9,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: widget.isPremium
+                            ? const Color(0xFF1E628C)
+                            : const Color(0xFF8EA2B1),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      widget.isPremium ? 'Premium Active' : 'Free Plan',
+                      style: const TextStyle(
+                        color: Color(0xFF1E3342),
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                _actionButton(
+                  label: widget.isPremium
+                      ? 'Manage / Cancel Membership'
+                      : 'View Membership Options',
+                  onTap: () async {
+                    await widget.onManageMembership();
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(this.context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Opened membership management.'),
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+          _settingsCard(
+            child: SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () async {
+                  await widget.onSignOut();
+                  if (!mounted) return;
+                  Navigator.of(this.context).pop();
+                },
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFF1E628C),
+                  side: const BorderSide(color: Color(0xFFC9DCE8)),
+                  minimumSize: const Size.fromHeight(50),
+                ),
+                icon: const Icon(Icons.logout_rounded),
+                label: const Text('Sign out'),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _settingsCard({required Widget child}) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFD9E8F2)),
+      ),
+      child: child,
+    );
+  }
+
+  Widget _fieldLabel(String text) {
+    return Text(
+      text,
+      style: const TextStyle(
+        color: Color(0xFF6F8494),
+        fontWeight: FontWeight.w600,
+        fontSize: 13,
+      ),
+    );
+  }
+
+  InputDecoration _inputDecoration(String hint) {
+    return InputDecoration(
+      hintText: hint,
+      filled: true,
+      fillColor: Colors.white,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: const BorderSide(color: Color(0xFFD6E6F0)),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: const BorderSide(color: Color(0xFFD6E6F0)),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: const BorderSide(color: Color(0xFF1E628C), width: 1.4),
+      ),
+    );
+  }
+
+  Widget _actionButton({
+    required String label,
+    required Future<void> Function() onTap,
+    bool busy = false,
+  }) {
+    return SizedBox(
+      width: double.infinity,
+      child: ElevatedButton(
+        onPressed: busy ? null : onTap,
+        style: ElevatedButton.styleFrom(
+          backgroundColor: const Color(0xFF1E628C),
+          foregroundColor: Colors.white,
+          minimumSize: const Size.fromHeight(46),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+        child: Text(label),
+      ),
+    );
+  }
+
+  Future<void> _updateEmail() async {
+    final nextEmail = _emailController.text.trim();
+    if (nextEmail.isEmpty || nextEmail == widget.user.email) return;
+
+    setState(() => _savingEmail = true);
+    try {
+      await widget.user.verifyBeforeUpdateEmail(nextEmail);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Verification email sent. Confirm to finish updating.'),
+        ),
+      );
+    } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message ?? 'Unable to update email.')),
+      );
+    } finally {
+      if (mounted) setState(() => _savingEmail = false);
+    }
+  }
+
+  Future<void> _updatePassword() async {
+    final nextPassword = _passwordController.text.trim();
+    if (nextPassword.length < 6) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Password must be at least 6 characters.')),
+      );
+      return;
+    }
+
+    setState(() => _savingPassword = true);
+    try {
+      await widget.user.updatePassword(nextPassword);
+      _passwordController.clear();
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Password updated.')));
+    } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
+      final message = e.code == 'requires-recent-login'
+          ? 'Please sign out and sign in again, then retry password update.'
+          : (e.message ?? 'Unable to update password.');
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    } finally {
+      if (mounted) setState(() => _savingPassword = false);
+    }
+  }
+
+  Future<void> _pickBirthday() async {
+    final now = DateTime.now();
+    final selected = await showDatePicker(
+      context: context,
+      initialDate: _birthday ?? DateTime(now.year - 20, now.month, now.day),
+      firstDate: DateTime(1940, 1, 1),
+      lastDate: now,
+    );
+    if (selected == null) return;
+    setState(() => _birthday = selected);
+  }
+
+  Future<void> _saveBirthday() async {
+    if (_birthday == null) return;
+    setState(() => _savingBirthday = true);
+    try {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(widget.user.uid)
+          .collection('profile')
+          .doc('current')
+          .set(
+            <String, dynamic>{
+              'birthDate': _birthday!.toIso8601String(),
+            },
+            SetOptions(merge: true),
+          );
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Birthday saved.')));
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not save birthday right now.')),
+      );
+    } finally {
+      if (mounted) setState(() => _savingBirthday = false);
+    }
   }
 }

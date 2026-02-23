@@ -25,7 +25,7 @@ class SkillMaxApp extends StatelessWidget {
       title: 'SkillMax',
       theme: base.copyWith(
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF0D0C18),
+          seedColor: const Color(0xFF1E628C),
           brightness: Brightness.light,
         ),
         scaffoldBackgroundColor: const Color(0xFFF8F8F8),
@@ -41,7 +41,7 @@ class SkillMaxApp extends StatelessWidget {
         elevatedButtonTheme: ElevatedButtonThemeData(
           style: ElevatedButton.styleFrom(
             elevation: 0,
-            backgroundColor: const Color(0xFF0D0C18),
+            backgroundColor: const Color(0xFF1E628C),
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(32),
             ),
