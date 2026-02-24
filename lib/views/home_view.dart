@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:ui';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -37,6 +38,10 @@ class _HomeViewState extends ConsumerState<HomeView> {
   bool _showRecovery = false;
   bool _showTargetsIntro = true;
   bool _showNoAdaptBanner = true;
+  bool _isOpeningMembershipPaywall = false;
+  bool _didShowPostOnboardingOverview = false;
+  bool _didRunDailyCheckIn = false;
+  String? _adaptationBanner;
 
   List<_CoachMessage> _coachMessages = const <_CoachMessage>[];
   _PlanChangePreview? _pendingChange;
@@ -70,6 +75,12 @@ class _HomeViewState extends ConsumerState<HomeView> {
   Widget build(BuildContext context) {
     final subState = ref.watch(subscriptionControllerProvider);
     final subController = ref.read(subscriptionControllerProvider.notifier);
+    final lockDashboard =
+        _tabIndex == 0 &&
+        subState.isConfigured && !subState.isLoading && !subState.isPremium;
+    if (lockDashboard) {
+      _maybeEnforceMembershipGate(subController);
+    }
 
     return Scaffold(
       body: DecoratedBox(
@@ -119,12 +130,17 @@ class _HomeViewState extends ConsumerState<HomeView> {
                         sessions: sessions,
                         isPremium: subState.isPremium,
                       );
+                      _maybeHandlePostOnboardingOverview(
+                        profileMap: profileMap,
+                        plan: plan,
+                        workoutData: workoutData,
+                      );
+                      _maybeRunDailyCheckIn(
+                        profileMap: profileMap,
+                        workoutData: workoutData,
+                      );
 
-                      final currentDay = _todayOverride ??
-                          workoutData.weekDays.firstWhere(
-                            (d) => d.date == workoutData.today.date,
-                            orElse: () => workoutData.today,
-                          );
+                      final currentDay = _todayOverride ?? workoutData.today;
 
                       final screen = _buildTabScreen(
                         context: context,
@@ -175,6 +191,19 @@ class _HomeViewState extends ConsumerState<HomeView> {
                               },
                             ),
                           ),
+                          if (lockDashboard)
+                            Positioned.fill(
+                              child: _MembershipRequiredOverlay(
+                                onRestore: () async {
+                                  await subController.restorePurchases();
+                                  await subController.refresh();
+                                },
+                                onSignOut: () async {
+                                  await subController.logOut();
+                                  await FirebaseAuth.instance.signOut();
+                                },
+                              ),
+                            ),
                         ],
                       );
                     },
@@ -190,6 +219,145 @@ class _HomeViewState extends ConsumerState<HomeView> {
         onChange: (value) => setState(() => _tabIndex = value),
       ),
     );
+  }
+
+  void _maybeEnforceMembershipGate(SubscriptionController subController) {
+    if (_isOpeningMembershipPaywall) return;
+    _isOpeningMembershipPaywall = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      while (mounted) {
+        final latest = ref.read(subscriptionControllerProvider);
+        final shouldLock =
+            latest.isConfigured && !latest.isLoading && !latest.isPremium;
+        if (!shouldLock) break;
+        await subController.showPaywall();
+        await subController.refresh();
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+      }
+      _isOpeningMembershipPaywall = false;
+    });
+  }
+
+  void _maybeHandlePostOnboardingOverview({
+    required Map<String, dynamic> profileMap,
+    required TrainingPlan? plan,
+    required _WorkoutData workoutData,
+  }) {
+    if (_didShowPostOnboardingOverview) return;
+    if (plan == null) return;
+    if (profileMap['showPlanOverviewOnNextOpen'] != true) return;
+    _didShowPostOnboardingOverview = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      final shouldStart = await Navigator.of(context).push<bool>(
+        MaterialPageRoute(
+          builder: (_) => _PlanOverviewScreen(
+            days: workoutData.weekDays,
+            goal: profileMap['goal']?.toString() ?? 'Build Strength',
+            skills: (profileMap['skills'] as List<dynamic>? ?? const <dynamic>[])
+                .map((e) => e.toString())
+                .toList(growable: false),
+            daysPerWeek: plan.daysPerWeek,
+            workoutLength: plan.workoutLength,
+            currentDayIndex: workoutData.currentDayIndex,
+          ),
+        ),
+      );
+      if (shouldStart != true || !mounted) return;
+      await _initializePlanStart(plan, workoutData.weekDays);
+    });
+  }
+
+  void _maybeRunDailyCheckIn({
+    required Map<String, dynamic> profileMap,
+    required _WorkoutData workoutData,
+  }) {
+    if (_didRunDailyCheckIn) return;
+    final raw = profileMap['lastDailyCheckInAt']?.toString();
+    final last = DateTime.tryParse(raw ?? '');
+    final now = DateTime.now();
+    if (last != null && _isSameDay(last, now)) return;
+    _didRunDailyCheckIn = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      final feeling = await showModalBottomSheet<String>(
+        context: context,
+        backgroundColor: _kBgCard,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        builder: (context) {
+          return SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(height: 10),
+                Text(
+                  'How are you feeling today?',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        color: _kText,
+                        fontWeight: FontWeight.w800,
+                      ),
+                ),
+                const SizedBox(height: 8),
+                ...const <String>['Fresh', 'Normal', 'Sore', 'Very sore'].map(
+                  (option) => ListTile(
+                    title: Text(option),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: () => Navigator.of(context).pop(option),
+                  ),
+                ),
+                const SizedBox(height: 12),
+              ],
+            ),
+          );
+        },
+      );
+      await _repository.updateUserProfile(widget.user.uid, <String, dynamic>{
+        'lastDailyCheckInAt': DateTime.now().toIso8601String(),
+      });
+      if (feeling == null || !mounted) return;
+      if (feeling == 'Sore' || feeling == 'Very sore') {
+        setState(() {
+          _adaptationBanner =
+              'Plan updated for tomorrow. Why: soreness check-in. Change: reduced one set on two exercises.';
+          _todayOverride = workoutData.today.copyWith(
+            exercises: workoutData.today.exercises
+                .map((e) => e.copyWith(sets: math.max(2, e.sets - 1)))
+                .toList(growable: false),
+          );
+        });
+      }
+    });
+  }
+
+  Future<void> _initializePlanStart(
+    TrainingPlan plan,
+    List<_WorkoutDayUi> days,
+  ) async {
+    final start = DateTime.now();
+    final normalizedStart = DateTime(start.year, start.month, start.day);
+    final sorted = days.toList(growable: true)..sort((a, b) => a.dayIndex - b.dayIndex);
+    final shiftedDays = sorted
+        .map(
+          (day) => day.copyWith(
+            date: normalizedStart.add(Duration(days: day.dayIndex - 1)),
+            status: _WorkoutStatus.scheduled,
+          ),
+        )
+        .toList(growable: false);
+    final updated = _copyPlanWithUpdatedDays(
+      plan,
+      shiftedDays,
+      startDate: normalizedStart,
+      currentDayIndex: 1,
+      resetHistory: true,
+    );
+    await _repository.saveTrainingPlan(widget.user.uid, updated);
+    await _repository.updateUserProfile(widget.user.uid, <String, dynamic>{
+      'showPlanOverviewOnNextOpen': false,
+      'planStartedAt': normalizedStart.toIso8601String(),
+    });
   }
 
   Widget _buildTabScreen({
@@ -247,10 +415,12 @@ class _HomeViewState extends ConsumerState<HomeView> {
     return _WorkoutTab(
       today: today,
       weekDays: workoutData.weekDays,
+      currentDayIndex: workoutData.currentDayIndex,
       profileMap: profileMap,
       hasAutoAdapt: workoutData.adaptIfMissed,
       showNoAdaptBanner: _showNoAdaptBanner && !workoutData.adaptIfMissed,
       missedMessage: workoutData.missedMessage,
+      adaptationBanner: _adaptationBanner ?? workoutData.adaptationBanner,
       isPremium: subState.isPremium,
       onAdaptNow: () {
         final adapted = _adaptWeekDays(workoutData.weekDays);
@@ -295,6 +465,26 @@ class _HomeViewState extends ConsumerState<HomeView> {
         await subController.showPaywall();
         await subController.refresh();
       },
+      onOpenPlanOverview: () => Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => _PlanOverviewScreen(
+            days: workoutData.weekDays,
+            goal: profileMap['goal']?.toString() ?? 'Build Strength',
+            skills: (profileMap['skills'] as List<dynamic>? ?? const <dynamic>[])
+                .map((e) => e.toString())
+                .toList(growable: false),
+            daysPerWeek: plan?.daysPerWeek ?? 4,
+            workoutLength: plan?.workoutLength ?? '25-35',
+            currentDayIndex: workoutData.currentDayIndex,
+            allowStartActions: false,
+          ),
+        ),
+      ),
+      onOpenDayDetail: () => Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => _DayDetailScreen(day: today),
+        ),
+      ),
       onStartTap: () => _startWorkout(
         context,
         today: today,
@@ -312,11 +502,7 @@ class _HomeViewState extends ConsumerState<HomeView> {
     required List<_WorkoutLogUi> sessions,
     required bool isPremium,
   }) {
-    final now = DateTime.now();
-    final weekStart = _startOfWeek(now);
-
     final generatedWeek = _buildWeekDays(
-      weekStart: weekStart,
       profileMap: profileMap,
       plan: plan,
       sessions: sessions,
@@ -324,20 +510,21 @@ class _HomeViewState extends ConsumerState<HomeView> {
     );
 
     final weekDays = _weekOverride ?? generatedWeek;
-    final today = weekDays.firstWhere(
-      (day) => _isSameDay(day.date, now),
-      orElse: () => weekDays.first,
-    );
+    final currentIndex = (plan?.currentDayIndex ?? 1).clamp(1, weekDays.length);
+    final today = weekDays[currentIndex - 1];
 
     final targets = _buildTargets(plan, sessions);
     final missed = weekDays
-        .where((day) => day.status == _WorkoutStatus.missed)
+        .where(
+          (day) =>
+              day.status == _WorkoutStatus.missed && !day.isRestDay && day.dayIndex < currentIndex,
+        )
         .toList(growable: false);
 
     final adaptIfMissed = profileMap['adaptIfMissDay'] == true ||
         profileMap['adapt_if_missed']?.toString().toLowerCase() == 'yes';
 
-    if (adaptIfMissed && missed.isNotEmpty && _weekOverride == null) {
+    if (adaptIfMissed && missed.length >= 2 && _weekOverride == null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         final adapted = _adaptWeekDays(weekDays);
@@ -361,36 +548,52 @@ class _HomeViewState extends ConsumerState<HomeView> {
     return _WorkoutData(
       today: today,
       weekDays: weekDays,
+      currentDayIndex: currentIndex,
       targets: targets,
       hasLockedContent: weekDays.any((d) => d.isLocked),
       adaptIfMissed: adaptIfMissed,
       missedMessage: missed.isEmpty
           ? null
-          : 'Missed ${_weekdayName(missed.first.date.weekday)}. Want me to adapt your week?',
+          : missed.length == 1
+              ? 'Looks like you missed Day ${missed.first.dayIndex}. Want to do it today?'
+              : 'Multiple missed days detected. Recommend a lighter re-entry session before resuming.',
+      adaptationBanner: _adaptationBanner,
     );
   }
 
   List<_WorkoutDayUi> _buildWeekDays({
-    required DateTime weekStart,
     required Map<String, dynamic> profileMap,
     required TrainingPlan? plan,
     required List<_WorkoutLogUi> sessions,
     required bool isPremium,
   }) {
+    final now = DateTime.now();
+    final normalizedToday = DateTime(now.year, now.month, now.day);
+    final currentIndex = (plan?.currentDayIndex ?? 1).clamp(1, 14);
+
     if (plan?.workoutDays.isNotEmpty == true) {
       final stored = plan!.workoutDays.toList(growable: true)
         ..sort((a, b) => a.date.compareTo(b.date));
+      final startDate =
+          plan.startDate ??
+          (stored.isNotEmpty ? DateTime(stored.first.date.year, stored.first.date.month, stored.first.date.day) : normalizedToday);
 
       return List<_WorkoutDayUi>.generate(stored.length, (index) {
         final day = stored[index];
-        final completed = sessions.any((log) => _isSameDay(log.completedAt, day.date));
+        final dayNumber = index + 1;
+        final calculatedDate = DateTime(startDate.year, startDate.month, startDate.day)
+            .add(Duration(days: index));
+        final isRest = day.type.toLowerCase().contains('rest');
+        final completed = day.status == 'completed' ||
+            sessions.any((log) => _isSameDay(log.completedAt, calculatedDate));
         final status = completed
             ? _WorkoutStatus.completed
-            : _isMissed(day.date)
+            : (!isRest && dayNumber < currentIndex)
                 ? _WorkoutStatus.missed
                 : _WorkoutStatus.scheduled;
         return _WorkoutDayUi(
-          date: day.date,
+          dayIndex: dayNumber,
+          date: calculatedDate,
           type: day.type,
           estimatedMinutes: day.estimatedMinutes,
           exercises: day.exercises
@@ -401,6 +604,9 @@ class _HomeViewState extends ConsumerState<HomeView> {
                   reps: e.reps,
                   level: e.progressionLevel,
                   category: e.category,
+                  restSeconds: e.restSeconds,
+                  intensityTarget: _intensityForLevel(e.progressionLevel),
+                  altExercises: e.altExercises,
                 ),
               )
               .toList(growable: false),
@@ -417,39 +623,30 @@ class _HomeViewState extends ConsumerState<HomeView> {
         (profileMap['equipment'] as List<dynamic>? ?? const <dynamic>[])
             .map((e) => e.toString())
             .toList(growable: false);
-
     final split = plan?.weeklySplit.isNotEmpty == true
         ? plan!.weeklySplit
         : const <String>['Push', 'Pull', 'Legs + Core', 'Skill Focus'];
-
     final daysPerWeek = (profileMap['daysPerWeek'] as num?)?.toInt() ??
         (plan?.daysPerWeek ?? 4).clamp(2, 6);
+    final sequence = _buildSequenceWithRest(split, daysPerWeek: daysPerWeek);
+    final startDate = normalizedToday;
 
-    final scheduledDates = <DateTime>[];
-    for (var i = 0; i < daysPerWeek; i++) {
-      scheduledDates.add(weekStart.add(Duration(days: i)));
-    }
-
-    return List<_WorkoutDayUi>.generate(daysPerWeek, (index) {
-      final dayDate = scheduledDates[index];
-      final type = split[index % split.length];
-      final completed = sessions.any((log) => _isSameDay(log.completedAt, dayDate));
-      final status = completed
-          ? _WorkoutStatus.completed
-          : _isMissed(dayDate)
-              ? _WorkoutStatus.missed
-              : _WorkoutStatus.scheduled;
-
-      final exercises = _generateExercises(
-        type: type,
-        skills: skills,
-        equipment: equipment,
-      );
+    return List<_WorkoutDayUi>.generate(14, (index) {
+      final dayDate = startDate.add(Duration(days: index));
+      final type = sequence[index % sequence.length];
+      final isRest = type.toLowerCase().contains('rest');
+      final status = (!isRest && index + 1 < currentIndex)
+          ? _WorkoutStatus.missed
+          : _WorkoutStatus.scheduled;
+      final exercises = isRest
+          ? _recoveryExercises()
+          : _generateExercises(type: type, skills: skills, equipment: equipment);
 
       return _WorkoutDayUi(
+        dayIndex: index + 1,
         date: dayDate,
         type: type,
-        estimatedMinutes: _estimateMinutes(profileMap['workoutLength']?.toString()),
+        estimatedMinutes: isRest ? 10 : _estimateMinutes(profileMap['workoutLength']?.toString()),
         exercises: exercises,
         status: status,
         isLocked: !isPremium && index > 0,
@@ -457,11 +654,56 @@ class _HomeViewState extends ConsumerState<HomeView> {
     });
   }
 
-  bool _isMissed(DateTime plannedDate) {
-    final now = DateTime.now();
-    final cutoff = DateTime(plannedDate.year, plannedDate.month, plannedDate.day)
-        .add(const Duration(days: 1, hours: 3));
-    return now.isAfter(cutoff);
+  List<String> _buildSequenceWithRest(List<String> split, {required int daysPerWeek}) {
+    final normalized = split.isEmpty ? const <String>['Full Body + Skill'] : split;
+    final trainingDays = daysPerWeek.clamp(2, 6);
+    final sequence = <String>[];
+    for (var i = 0; i < 7; i++) {
+      if (i < trainingDays) {
+        sequence.add(normalized[i % normalized.length]);
+      } else {
+        sequence.add('Rest Day');
+      }
+    }
+    return sequence;
+  }
+
+  List<_ExerciseUi> _recoveryExercises() {
+    return const <_ExerciseUi>[
+      _ExerciseUi(
+        name: '90/90 Hip Switch',
+        sets: 2,
+        reps: '45s',
+        level: 1,
+        category: 'recovery',
+        restSeconds: 30,
+        intensityTarget: 'Easy',
+      ),
+      _ExerciseUi(
+        name: 'Thoracic Open Book',
+        sets: 2,
+        reps: '8/side',
+        level: 1,
+        category: 'recovery',
+        restSeconds: 30,
+        intensityTarget: 'Easy',
+      ),
+      _ExerciseUi(
+        name: 'Light Walk',
+        sets: 1,
+        reps: '8-12 min',
+        level: 1,
+        category: 'recovery',
+        restSeconds: 0,
+        intensityTarget: 'Easy',
+      ),
+    ];
+  }
+
+  String _intensityForLevel(int level) {
+    if (level <= 2) return 'Easy';
+    if (level == 3) return 'Moderate';
+    return 'Hard';
   }
 
   List<_TargetUi> _buildTargets(TrainingPlan? plan, List<_WorkoutLogUi> sessions) {
@@ -590,6 +832,69 @@ class _HomeViewState extends ConsumerState<HomeView> {
     );
   }
 
+  List<_WorkoutDayUi> _applyConservativeAdaptation(
+    List<_WorkoutDayUi> days, {
+    required _WorkoutDayUi today,
+    required _WorkoutCompletionPayload payload,
+  }) {
+    if (days.isEmpty) return days;
+    final updated = days.map((d) => d.copyWith()).toList(growable: true);
+    final nextIndex = updated.indexWhere((d) => d.dayIndex > today.dayIndex && !d.isRestDay);
+    if (nextIndex == -1) return updated;
+
+    var progressedCount = 0;
+    final next = updated[nextIndex];
+    final nextExercises = next.exercises.map((e) => e.copyWith()).toList(growable: true);
+
+    if (payload.painScore >= 8) {
+      for (var i = 0; i < nextExercises.length; i++) {
+        if (progressedCount >= 2) break;
+        nextExercises[i] = nextExercises[i].copyWith(
+          name: '${nextExercises[i].name} (safe alt)',
+          sets: math.max(2, nextExercises[i].sets - 1),
+        );
+        progressedCount++;
+      }
+      _adaptationBanner =
+          'Plan updated for tomorrow. Why: pain reported. Change: safer alternatives + reduced volume.';
+    } else if (payload.tooHardExercises.isNotEmpty || payload.difficulty >= 8) {
+      for (var i = 0; i < nextExercises.length; i++) {
+        if (progressedCount >= 2) break;
+        nextExercises[i] = nextExercises[i].copyWith(sets: math.max(2, nextExercises[i].sets - 1));
+        progressedCount++;
+      }
+      _adaptationBanner =
+          'Plan updated for tomorrow. Why: hard session or missed reps. Change: reduced sets.';
+    } else if (payload.tooEasyExercises.isNotEmpty && payload.completedAllSets) {
+      for (var i = 0; i < nextExercises.length; i++) {
+        if (progressedCount >= 2) break;
+        nextExercises[i] = nextExercises[i].copyWith(reps: _bumpRepTarget(nextExercises[i].reps));
+        progressedCount++;
+      }
+      _adaptationBanner =
+          'Plan updated for tomorrow. Why: session rated easy. Change: increased reps on 2 exercises.';
+    }
+
+    updated[nextIndex] = next.copyWith(exercises: nextExercises);
+    return updated;
+  }
+
+  String _bumpRepTarget(String reps) {
+    final range = reps.split('-');
+    if (range.length == 2) {
+      final start = int.tryParse(range[0].trim());
+      final end = int.tryParse(range[1].trim());
+      if (start != null && end != null) {
+        return '${start + 1}-${end + 2}';
+      }
+    }
+    final base = int.tryParse(reps.replaceAll(RegExp('[^0-9]'), ''));
+    if (base != null) {
+      return '${base + 2}';
+    }
+    return reps;
+  }
+
   Future<void> _startWorkout(
     BuildContext context, {
     required _WorkoutDayUi today,
@@ -606,7 +911,7 @@ class _HomeViewState extends ConsumerState<HomeView> {
 
     if (!context.mounted) return;
 
-    await showModalBottomSheet<void>(
+    final completion = await showModalBottomSheet<_WorkoutCompletionPayload>(
       context: context,
       isScrollControlled: true,
       backgroundColor: _kBgCard,
@@ -614,38 +919,64 @@ class _HomeViewState extends ConsumerState<HomeView> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (context) {
-        return _WorkoutPlayerSheet(
-          day: today,
-          onComplete: () async {
-            final now = DateTime.now();
-            final result = TrainingSessionResult(
-              id: 'session_${now.millisecondsSinceEpoch}',
-              userId: widget.user.uid,
-              completedAt: now,
-              completed: true,
-              difficulty: 7,
-              painScore: 2,
-              notes: 'Completed via dashboard player',
-            );
-            await _repository.saveSessionResult(result);
-            if (plan != null) {
-              final completedDays = allDays
-                  .map(
-                    (day) => _isSameDay(day.date, today.date)
-                        ? day.copyWith(status: _WorkoutStatus.completed)
-                        : day,
-                  )
-                  .toList(growable: false);
-              await _persistWeekToPlan(plan, completedDays);
-            }
-            if (!mounted) return;
-            Navigator.of(this.context).pop();
-            ScaffoldMessenger.of(this.context).showSnackBar(
-              const SnackBar(content: Text('Workout logged. Nice work.')),
-            );
-          },
-        );
+        return _WorkoutPlayerSheet(day: today);
       },
+    );
+    if (completion == null) return;
+
+    final now = DateTime.now();
+    final result = TrainingSessionResult(
+      id: 'session_${now.millisecondsSinceEpoch}',
+      userId: widget.user.uid,
+      completedAt: now,
+      completed: true,
+      difficulty: completion.difficulty,
+      painScore: completion.painScore,
+      energy: completion.energy,
+      tooEasyExercises: completion.tooEasyExercises,
+      tooHardExercises: completion.tooHardExercises,
+      exerciseLogs: completion.exerciseLogs,
+      notes: completion.notes,
+    );
+    await _repository.saveSessionResult(result);
+
+    if (plan != null) {
+      final completedDays = allDays
+          .map(
+            (day) => day.dayIndex == today.dayIndex
+                ? day.copyWith(status: _WorkoutStatus.completed)
+                : day,
+          )
+          .toList(growable: false);
+      final adaptedDays = _applyConservativeAdaptation(
+        completedDays,
+        today: today,
+        payload: completion,
+      );
+      final updated = _copyPlanWithUpdatedDays(
+        plan,
+        adaptedDays,
+        currentDayIndex: math.min(plan.currentDayIndex + 1, adaptedDays.length),
+        appendHistory: PlanDayHistory(
+          calendarDate: DateTime(now.year, now.month, now.day),
+          planDayIndex: today.dayIndex,
+          status: 'completed',
+          completedAt: now,
+          notes: completion.notes,
+        ),
+      );
+      await _repository.saveTrainingPlan(widget.user.uid, updated);
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _adaptationBanner = completion.adaptationReason;
+      _todayOverride = null;
+    });
+    ScaffoldMessenger.of(this.context).showSnackBar(
+      SnackBar(
+        content: Text(today.isRestDay ? 'Rest day logged.' : 'Workout logged. Nice work.'),
+      ),
     );
   }
 
@@ -1351,14 +1682,13 @@ class _HomeViewState extends ConsumerState<HomeView> {
   Future<void> _persistTodayToPlan(TrainingPlan plan, _WorkoutDayUi today) async {
     final baseline = _weekOverride ??
         _buildWeekDays(
-          weekStart: _startOfWeek(DateTime.now()),
           profileMap: const <String, dynamic>{},
           plan: plan,
           sessions: const <_WorkoutLogUi>[],
           isPremium: true,
         );
     final next = baseline
-        .map((d) => _isSameDay(d.date, today.date) ? today : d)
+        .map((d) => d.dayIndex == today.dayIndex ? today : d)
         .toList(growable: false);
     final updated = _copyPlanWithUpdatedDays(plan, next);
     await _repository.saveTrainingPlan(widget.user.uid, updated);
@@ -1366,9 +1696,18 @@ class _HomeViewState extends ConsumerState<HomeView> {
 
   TrainingPlan _copyPlanWithUpdatedDays(
     TrainingPlan base,
-    List<_WorkoutDayUi> days,
+    List<_WorkoutDayUi> days, {
+    DateTime? startDate,
+    int? currentDayIndex,
+    bool resetHistory = false,
+    PlanDayHistory? appendHistory,
+  }
   ) {
-    final sorted = days.toList(growable: true)..sort((a, b) => a.date.compareTo(b.date));
+    final sorted = days.toList(growable: true)..sort((a, b) => a.dayIndex.compareTo(b.dayIndex));
+    final history = <PlanDayHistory>[
+      if (!resetHistory) ...base.dayHistory,
+      ...<PlanDayHistory?>[appendHistory].whereType<PlanDayHistory>(),
+    ];
     return TrainingPlan(
       id: base.id,
       userId: base.userId,
@@ -1380,6 +1719,8 @@ class _HomeViewState extends ConsumerState<HomeView> {
       blocks: base.blocks,
       generator: base.generator,
       activeWeekStartDate: sorted.isEmpty ? base.activeWeekStartDate : _startOfWeek(sorted.first.date),
+      startDate: startDate ?? base.startDate,
+      currentDayIndex: currentDayIndex ?? base.currentDayIndex,
       scheduleDays: sorted
           .map(
             (e) => PlanScheduleDay(
@@ -1393,6 +1734,7 @@ class _HomeViewState extends ConsumerState<HomeView> {
             ),
           )
           .toList(growable: false),
+      dayHistory: history,
       skillTracks: base.skillTracks,
       volumeTargets: base.volumeTargets,
       progressionRules: base.progressionRules,
@@ -1431,6 +1773,7 @@ class _HomeViewState extends ConsumerState<HomeView> {
 
   Map<String, dynamic> _toWorkoutDayMap(_WorkoutDayUi day) {
     return <String, dynamic>{
+      'dayIndex': day.dayIndex,
       'date': day.date.toIso8601String(),
       'type': day.type,
       'estimatedMinutes': day.estimatedMinutes,
@@ -1458,10 +1801,12 @@ class _WorkoutTab extends StatelessWidget {
   const _WorkoutTab({
     required this.today,
     required this.weekDays,
+    required this.currentDayIndex,
     required this.profileMap,
     required this.hasAutoAdapt,
     required this.showNoAdaptBanner,
     required this.missedMessage,
+    required this.adaptationBanner,
     required this.isPremium,
     required this.onAdaptNow,
     required this.onKeepSchedule,
@@ -1470,15 +1815,19 @@ class _WorkoutTab extends StatelessWidget {
     required this.onPickLength,
     required this.onPickEquipment,
     required this.onLockedTap,
+    required this.onOpenPlanOverview,
+    required this.onOpenDayDetail,
     required this.onStartTap,
   });
 
   final _WorkoutDayUi today;
   final List<_WorkoutDayUi> weekDays;
+  final int currentDayIndex;
   final Map<String, dynamic> profileMap;
   final bool hasAutoAdapt;
   final bool showNoAdaptBanner;
   final String? missedMessage;
+  final String? adaptationBanner;
   final bool isPremium;
 
   final VoidCallback onAdaptNow;
@@ -1488,11 +1837,13 @@ class _WorkoutTab extends StatelessWidget {
   final VoidCallback onPickLength;
   final VoidCallback onPickEquipment;
   final VoidCallback onLockedTap;
+  final VoidCallback onOpenPlanOverview;
+  final VoidCallback onOpenDayDetail;
   final VoidCallback onStartTap;
 
   @override
   Widget build(BuildContext context) {
-    final subtitle = '${today.exercises.length} Exercises • ${_muscleCount(today)} Muscles';
+    final subtitle = '${today.exercises.length} Exercises • ${_muscleCount(today)} Blocks';
     final firstName =
         profileMap['fullName']?.toString().split(' ').first ?? 'Athlete';
 
@@ -1503,31 +1854,49 @@ class _WorkoutTab extends StatelessWidget {
         SliverToBoxAdapter(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-            child: Row(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                CircleAvatar(
-                  radius: 18,
-                  backgroundColor: const Color(0xFFE6F0F7),
-                  child: Text(
-                    firstName.isEmpty ? 'S' : firstName[0].toUpperCase(),
-                    style: const TextStyle(color: _kText, fontWeight: FontWeight.w700),
+                Row(
+                  children: [
+                    CircleAvatar(
+                      radius: 18,
+                      backgroundColor: const Color(0xFFE6F0F7),
+                      child: Text(
+                        firstName.isEmpty ? 'S' : firstName[0].toUpperCase(),
+                        style: const TextStyle(color: _kText, fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Text(
+                      'Day $currentDayIndex',
+                      style: const TextStyle(color: _kMuted, fontSize: 15),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      onPressed: onOpenMenu,
+                      icon: const Icon(Icons.more_horiz_rounded, color: _kText),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      _PillButton(
+                        icon: Icons.calendar_view_week_rounded,
+                        label: 'Plan Overview',
+                        onTap: onOpenPlanOverview,
+                      ),
+                      const SizedBox(width: 6),
+                      _PillButton(
+                        icon: Icons.swap_horiz_rounded,
+                        label: 'Swap',
+                        onTap: onSwapTap,
+                      ),
+                    ],
                   ),
-                ),
-                const SizedBox(width: 10),
-                const Text(
-                  'My Plan >',
-                  style: TextStyle(color: _kMuted, fontSize: 15),
-                ),
-                const Spacer(),
-                _PillButton(
-                  icon: Icons.swap_horiz_rounded,
-                  label: 'Swap',
-                  onTap: onSwapTap,
-                ),
-                const SizedBox(width: 6),
-                IconButton(
-                  onPressed: onOpenMenu,
-                  icon: const Icon(Icons.more_horiz_rounded, color: _kText),
                 ),
               ],
             ),
@@ -1537,7 +1906,7 @@ class _WorkoutTab extends StatelessWidget {
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
             child: Text(
-              today.type,
+              'Day $currentDayIndex — ${today.type}',
               style: Theme.of(context).textTheme.displaySmall?.copyWith(
                     color: _kText,
                     fontWeight: FontWeight.w900,
@@ -1549,7 +1918,10 @@ class _WorkoutTab extends StatelessWidget {
         SliverToBoxAdapter(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
-            child: Text(subtitle, style: const TextStyle(color: _kMuted, fontSize: 15)),
+            child: Text(
+              '${_formatDate(today.date)} • ${_statusLabel(today.status)} • $subtitle',
+              style: const TextStyle(color: _kMuted, fontSize: 15),
+            ),
           ),
         ),
         SliverToBoxAdapter(
@@ -1579,20 +1951,47 @@ class _WorkoutTab extends StatelessWidget {
               ),
             ),
           ),
+        if (adaptationBanner != null)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE7F3FB),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Text(
+                  adaptationBanner!,
+                  style: const TextStyle(
+                    color: _kText,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+          ),
         SliverToBoxAdapter(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
             child: SizedBox(
               width: double.infinity,
-              child: ElevatedButton(
-                onPressed: onStartTap,
+                child: ElevatedButton(
+                  onPressed: onStartTap,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: _kAccent,
                   foregroundColor: Colors.white,
                   minimumSize: const Size.fromHeight(52),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                 ),
-                child: Text(today.isLocked && !isPremium ? 'Unlock to Start' : 'Start'),
+                child: Text(
+                  today.isLocked && !isPremium
+                      ? 'Unlock to Start'
+                      : today.isRestDay
+                          ? 'Complete Rest Day'
+                          : 'Start Workout',
+                ),
               ),
             ),
           ),
@@ -1604,6 +2003,7 @@ class _WorkoutTab extends StatelessWidget {
               today: today,
               isPremium: isPremium,
               onLockedTap: onLockedTap,
+              onExerciseTap: onOpenDayDetail,
             ),
           ),
         ),
@@ -1614,6 +2014,18 @@ class _WorkoutTab extends StatelessWidget {
   int _muscleCount(_WorkoutDayUi day) {
     final categories = day.exercises.map((e) => e.category).toSet();
     return categories.length;
+  }
+
+  String _statusLabel(_WorkoutStatus status) {
+    return switch (status) {
+      _WorkoutStatus.scheduled => 'Scheduled',
+      _WorkoutStatus.completed => 'Completed',
+      _WorkoutStatus.missed => 'Missed',
+    };
+  }
+
+  String _formatDate(DateTime date) {
+    return '${date.month}/${date.day}/${date.year}';
   }
 
   String _lengthLabel(int minutes) {
@@ -1965,11 +2377,13 @@ class _TimelineWorkoutList extends StatelessWidget {
     required this.today,
     required this.isPremium,
     required this.onLockedTap,
+    required this.onExerciseTap,
   });
 
   final _WorkoutDayUi today;
   final bool isPremium;
   final VoidCallback onLockedTap;
+  final VoidCallback onExerciseTap;
 
   @override
   Widget build(BuildContext context) {
@@ -1986,6 +2400,7 @@ class _TimelineWorkoutList extends StatelessWidget {
             exercise: today.exercises.first,
             isFocus: true,
             showLock: false,
+            onTap: onExerciseTap,
           ),
           const SizedBox(height: 12),
           for (var i = 1; i < today.exercises.length; i++) ...[
@@ -1993,7 +2408,7 @@ class _TimelineWorkoutList extends StatelessWidget {
               exercise: today.exercises[i],
               isFocus: false,
               showLock: today.isLocked && !isPremium,
-              onTap: today.isLocked && !isPremium ? onLockedTap : null,
+              onTap: today.isLocked && !isPremium ? onLockedTap : onExerciseTap,
             ),
             const SizedBox(height: 10),
           ],
@@ -2137,6 +2552,292 @@ class _ExerciseRowState extends State<_ExerciseRow> {
   }
 }
 
+class _PlanOverviewScreen extends StatelessWidget {
+  const _PlanOverviewScreen({
+    required this.days,
+    required this.goal,
+    required this.skills,
+    required this.daysPerWeek,
+    required this.workoutLength,
+    required this.currentDayIndex,
+    this.allowStartActions = true,
+  });
+
+  final List<_WorkoutDayUi> days;
+  final String goal;
+  final List<String> skills;
+  final int daysPerWeek;
+  final String workoutLength;
+  final int currentDayIndex;
+  final bool allowStartActions;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: _kBgBase,
+      appBar: AppBar(title: const Text('Plan Overview')),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+        children: [
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: _kBgCard,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xFFD4E4EF)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'You’ll train $daysPerWeek days/week for $workoutLength minutes',
+                  style: const TextStyle(color: _kText, fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    Chip(label: Text(goal)),
+                    ...skills.take(3).map((s) => Chip(label: Text(s))),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          ...days.map((day) {
+            final status = day.dayIndex == currentDayIndex
+                ? 'Today ⭐'
+                : switch (day.status) {
+                    _WorkoutStatus.completed => 'Completed ✅',
+                    _WorkoutStatus.missed => 'Missed ❌',
+                    _WorkoutStatus.scheduled => 'Upcoming ◻️',
+                  };
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: ExpansionTile(
+                tilePadding: const EdgeInsets.symmetric(horizontal: 12),
+                collapsedShape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  side: const BorderSide(color: Color(0xFFD5E6F0)),
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  side: const BorderSide(color: Color(0xFFD5E6F0)),
+                ),
+                title: Text('Day ${day.dayIndex} — ${day.type}'),
+                subtitle: Text(status),
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                    child: _DayDetailBlocks(day: day),
+                  ),
+                ],
+              ),
+            );
+          }),
+          if (allowStartActions) ...[
+            const SizedBox(height: 8),
+            ElevatedButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Start Day 1'),
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Go to Dashboard'),
+            ),
+          ] else ...[
+            OutlinedButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Jump to Today'),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _DayDetailScreen extends StatelessWidget {
+  const _DayDetailScreen({required this.day});
+
+  final _WorkoutDayUi day;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('Day ${day.dayIndex} Detail')),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+        children: [
+          Text(
+            'Day ${day.dayIndex} — ${day.type}',
+            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  color: _kText,
+                  fontWeight: FontWeight.w800,
+                ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '${day.estimatedMinutes} minutes',
+            style: const TextStyle(color: _kMuted),
+          ),
+          const SizedBox(height: 14),
+          _DayDetailBlocks(day: day),
+          const SizedBox(height: 14),
+          ...day.exercises.map(
+            (exercise) => Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: ListTile(
+                contentPadding: const EdgeInsets.all(12),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  side: const BorderSide(color: Color(0xFFD6E6F0)),
+                ),
+                title: Text(exercise.name),
+                subtitle: Text(
+                  '${exercise.sets} x ${exercise.reps} • ${exercise.restSeconds}s rest • ${exercise.intensityTarget}',
+                ),
+                trailing: const Icon(Icons.chevron_right_rounded),
+                onTap: () {
+                  showModalBottomSheet<void>(
+                    context: context,
+                    isScrollControlled: true,
+                    backgroundColor: _kBgCard,
+                    shape: const RoundedRectangleBorder(
+                      borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+                    ),
+                    builder: (_) => _ExerciseDetailCard(exercise: exercise),
+                  );
+                },
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DayDetailBlocks extends StatelessWidget {
+  const _DayDetailBlocks({required this.day});
+
+  final _WorkoutDayUi day;
+
+  @override
+  Widget build(BuildContext context) {
+    final blocks = day.isRestDay
+        ? const <String>['Recommended recovery', 'Optional light walk', 'Hydration + sleep']
+        : const <String>[
+            'Warm-up',
+            'Skill block',
+            'Main strength block',
+            'Accessories',
+            'Core/Finisher',
+            'Cooldown',
+          ];
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: _kBgCard,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFD6E6F0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: blocks
+            .map(
+              (block) => Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Text('• $block', style: const TextStyle(color: _kText)),
+              ),
+            )
+            .toList(growable: false),
+      ),
+    );
+  }
+}
+
+class _ExerciseDetailCard extends StatelessWidget {
+  const _ExerciseDetailCard({required this.exercise});
+
+  final _ExerciseUi exercise;
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 48,
+              height: 4,
+              margin: const EdgeInsets.only(bottom: 12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFB4C8D8),
+                borderRadius: BorderRadius.circular(99),
+              ),
+            ),
+            Text(
+              exercise.name,
+              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                    color: _kText,
+                    fontWeight: FontWeight.w800,
+                  ),
+            ),
+            const SizedBox(height: 8),
+            const Text('What it trains', style: TextStyle(fontWeight: FontWeight.w700)),
+            Text(_trainingText(exercise.category)),
+            const SizedBox(height: 8),
+            const Text('How to do it', style: TextStyle(fontWeight: FontWeight.w700)),
+            const Text('1) Set your position. 2) Brace and move with control. 3) Finish each rep cleanly.'),
+            const SizedBox(height: 8),
+            const Text('Form cues', style: TextStyle(fontWeight: FontWeight.w700)),
+            const Text('• Keep ribcage down\n• Control tempo\n• Full range where pain-free'),
+            const SizedBox(height: 8),
+            const Text('Common mistakes', style: TextStyle(fontWeight: FontWeight.w700)),
+            const Text('• Rushing reps\n• Losing tension\n• Cutting range'),
+            const SizedBox(height: 8),
+            const Text('Scaling + substitutions', style: TextStyle(fontWeight: FontWeight.w700)),
+            Text(
+              'Easier: reduce reps or tempo.\nStandard: ${exercise.name}.\nHarder: add pause or reps.\nAlternatives: ${exercise.altExercises.isEmpty ? 'Bodyweight variation' : exercise.altExercises.join(', ')}',
+            ),
+            const SizedBox(height: 8),
+            const Text('Practical tips', style: TextStyle(fontWeight: FontWeight.w700)),
+            Text('Tempo: controlled. Rest: ${exercise.restSeconds}s. Good reps feel stable and repeatable. Stop on sharp pain.'),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                ElevatedButton(onPressed: () {}, child: const Text('Log set')),
+                OutlinedButton(onPressed: () {}, child: const Text('Swap exercise')),
+                OutlinedButton(onPressed: () {}, child: const Text('Mark too easy')),
+                OutlinedButton(onPressed: () {}, child: const Text('Mark too hard')),
+                OutlinedButton(onPressed: () {}, child: const Text('Report pain')),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _trainingText(String category) {
+    return switch (category.toLowerCase()) {
+      'pull' => 'Trains upper-back pulling strength and grip capacity.',
+      'push' => 'Trains pressing strength and shoulder stability.',
+      'legs' => 'Trains lower-body strength and control.',
+      'core' => 'Trains trunk stiffness and force transfer.',
+      _ => 'Builds movement quality and capacity for your training plan.',
+    };
+  }
+}
+
 class _BottomTabBar extends StatelessWidget {
   const _BottomTabBar({required this.index, required this.onChange});
 
@@ -2258,85 +2959,303 @@ class _UnlockBanner extends StatelessWidget {
   }
 }
 
-class _WorkoutPlayerSheet extends StatelessWidget {
-  const _WorkoutPlayerSheet({required this.day, required this.onComplete});
+class _MembershipRequiredOverlay extends StatelessWidget {
+  const _MembershipRequiredOverlay({
+    required this.onRestore,
+    required this.onSignOut,
+  });
 
-  final _WorkoutDayUi day;
-  final Future<void> Function() onComplete;
+  final Future<void> Function() onRestore;
+  final Future<void> Function() onSignOut;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 18),
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+            child: Container(color: const Color(0xB2222A30)),
+          ),
+        ),
+        Center(
+          child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: 24),
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF8FBFE),
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: const Color(0xFFD5E4EF)),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text(
+                  'Membership Required',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: _kText,
+                    fontSize: 20,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Your membership is inactive or expired. Restore or reactivate to continue using SkillMax.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: _kMuted),
+                ),
+                const SizedBox(height: 14),
+                ElevatedButton(
+                  onPressed: onRestore,
+                  style: ElevatedButton.styleFrom(backgroundColor: _kAccent),
+                  child: const Text('Restore Purchases'),
+                ),
+                const SizedBox(height: 8),
+                OutlinedButton(
+                  onPressed: onSignOut,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: _kMuted,
+                    side: const BorderSide(color: Color(0xFFC8DBE8)),
+                  ),
+                  child: const Text('Sign out'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _WorkoutPlayerSheet extends StatefulWidget {
+  const _WorkoutPlayerSheet({required this.day});
+
+  final _WorkoutDayUi day;
+
+  @override
+  State<_WorkoutPlayerSheet> createState() => _WorkoutPlayerSheetState();
+}
+
+class _WorkoutPlayerSheetState extends State<_WorkoutPlayerSheet> {
+  final Set<String> _tooEasy = <String>{};
+  final Set<String> _tooHard = <String>{};
+  final Map<String, bool> _setLogs = <String, bool>{};
+
+  int _difficulty = 6;
+  String _pain = 'None';
+  String _energy = 'Normal';
+
+  @override
+  Widget build(BuildContext context) {
+    final day = widget.day;
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 18),
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 48,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFB4C8D8),
+                  borderRadius: BorderRadius.circular(99),
+                ),
+              ),
+              Text(
+                day.type,
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      color: _kText,
+                      fontWeight: FontWeight.w800,
+                    ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '${day.estimatedMinutes} minutes • ${day.exercises.length} exercises',
+                style: const TextStyle(color: _kMuted),
+              ),
+              const SizedBox(height: 14),
+              ...day.exercises.map((exercise) => _buildExerciseLogger(exercise)),
+              const SizedBox(height: 12),
+              const Text(
+                'Overall difficulty',
+                style: TextStyle(color: _kText, fontWeight: FontWeight.w700),
+              ),
+              Slider(
+                value: _difficulty.toDouble(),
+                min: 1,
+                max: 10,
+                divisions: 9,
+                label: '$_difficulty',
+                onChanged: (value) => setState(() => _difficulty = value.round()),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Pain',
+                style: TextStyle(color: _kText, fontWeight: FontWeight.w700),
+              ),
+              Wrap(
+                spacing: 8,
+                children: ['None', 'Mild', 'Sharp']
+                    .map(
+                      (option) => ChoiceChip(
+                        label: Text(option),
+                        selected: _pain == option,
+                        onSelected: (_) => setState(() => _pain = option),
+                      ),
+                    )
+                    .toList(growable: false),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Energy',
+                style: TextStyle(color: _kText, fontWeight: FontWeight.w700),
+              ),
+              Wrap(
+                spacing: 8,
+                children: ['Low', 'Normal', 'High']
+                    .map(
+                      (option) => ChoiceChip(
+                        label: Text(option),
+                        selected: _energy == option,
+                        onSelected: (_) => setState(() => _energy = option),
+                      ),
+                    )
+                    .toList(growable: false),
+              ),
+              const SizedBox(height: 14),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: () {
+                    Navigator.of(context).pop(
+                      _WorkoutCompletionPayload(
+                        difficulty: _difficulty,
+                        painScore: switch (_pain) {
+                          'None' => 0,
+                          'Mild' => 4,
+                          'Sharp' => 9,
+                          _ => 0,
+                        },
+                        energy: _energy,
+                        tooEasyExercises: _tooEasy.toList(growable: false),
+                        tooHardExercises: _tooHard.toList(growable: false),
+                        completedAllSets: _setLogs.values.isNotEmpty && _setLogs.values.every((v) => v),
+                        exerciseLogs: day.exercises
+                            .map(
+                              (e) => <String, dynamic>{
+                                'exercise': e.name,
+                                'setsTarget': e.sets,
+                                'repsTarget': e.reps,
+                                'setChecks': List<bool>.generate(
+                                  e.sets,
+                                  (i) => _setLogs['${e.name}_$i'] ?? false,
+                                ),
+                              },
+                            )
+                            .toList(growable: false),
+                        notes: day.isRestDay
+                            ? 'Rest day completed with recovery routine.'
+                            : 'Completed from workout player.',
+                        adaptationReason: _buildAdaptationReason(),
+                      ),
+                    );
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _kAccent,
+                    foregroundColor: Colors.white,
+                    minimumSize: const Size.fromHeight(50),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  ),
+                  child: Text(day.isRestDay ? 'Complete Rest Day' : 'Complete and Log'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildExerciseLogger(_ExerciseUi exercise) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF4F8FC),
+        borderRadius: BorderRadius.circular(14),
+      ),
       child: Column(
-        mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 48,
-            height: 4,
-            margin: const EdgeInsets.only(bottom: 12),
-            decoration: BoxDecoration(
-              color: const Color(0xFFB4C8D8),
-              borderRadius: BorderRadius.circular(99),
-            ),
-          ),
-          Text(
-            day.type,
-            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                  color: _kText,
-                  fontWeight: FontWeight.w800,
-                ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            '${day.estimatedMinutes} minutes • ${day.exercises.length} exercises',
-            style: const TextStyle(color: _kMuted),
-          ),
-          const SizedBox(height: 14),
-          ...day.exercises.map(
-            (exercise) => Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF4F8FC),
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        exercise.name,
-                        style: const TextStyle(color: _kText, fontWeight: FontWeight.w700),
-                      ),
-                    ),
-                    Text(
-                      '${exercise.sets} x ${exercise.reps}',
-                      style: const TextStyle(color: _kMuted),
-                    ),
-                  ],
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  exercise.name,
+                  style: const TextStyle(color: _kText, fontWeight: FontWeight.w700),
                 ),
               ),
-            ),
+              Text('${exercise.sets} x ${exercise.reps}', style: const TextStyle(color: _kMuted)),
+            ],
           ),
-          const SizedBox(height: 10),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton(
-              onPressed: onComplete,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: _kAccent,
-                foregroundColor: Colors.white,
-                minimumSize: const Size.fromHeight(50),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: List<Widget>.generate(exercise.sets, (i) {
+              final key = '${exercise.name}_$i';
+              final checked = _setLogs[key] ?? false;
+              return FilterChip(
+                label: Text('Set ${i + 1}'),
+                selected: checked,
+                onSelected: (value) => setState(() => _setLogs[key] = value),
+              );
+            }),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            children: [
+              ChoiceChip(
+                label: const Text('Too easy'),
+                selected: _tooEasy.contains(exercise.name),
+                onSelected: (value) => setState(() {
+                  if (value) _tooEasy.add(exercise.name);
+                  if (value) _tooHard.remove(exercise.name);
+                }),
               ),
-              child: const Text('Complete and Log'),
-            ),
+              ChoiceChip(
+                label: const Text('Too hard'),
+                selected: _tooHard.contains(exercise.name),
+                onSelected: (value) => setState(() {
+                  if (value) _tooHard.add(exercise.name);
+                  if (value) _tooEasy.remove(exercise.name);
+                }),
+              ),
+            ],
           ),
         ],
       ),
     );
+  }
+
+  String? _buildAdaptationReason() {
+    if (_pain == 'Sharp') {
+      return 'Plan updated for tomorrow. Why: sharp pain reported. Change: safer swap + reduced sets.';
+    }
+    if (_tooHard.isNotEmpty || _difficulty >= 8) {
+      return 'Plan updated for tomorrow. Why: session rated hard. Change: reduced one set.';
+    }
+    if (_tooEasy.isNotEmpty && _setLogs.values.isNotEmpty && _setLogs.values.every((v) => v)) {
+      return 'Plan updated for tomorrow. Why: session rated easy. Change: added reps.';
+    }
+    return null;
   }
 }
 
@@ -3293,19 +4212,6 @@ class _PastWorkoutsCard extends StatelessWidget {
   }
 }
 
-String _weekdayName(int day) {
-  const names = <int, String>{
-    1: 'Monday',
-    2: 'Tuesday',
-    3: 'Wednesday',
-    4: 'Thursday',
-    5: 'Friday',
-    6: 'Saturday',
-    7: 'Sunday',
-  };
-  return names[day] ?? 'Day';
-}
-
 class _CoachMessage {
   const _CoachMessage({required this.text, required this.fromCoach});
 
@@ -3334,28 +4240,57 @@ class _PlanChangePreview {
   final _ChangeType applyType;
 }
 
+class _WorkoutCompletionPayload {
+  const _WorkoutCompletionPayload({
+    required this.difficulty,
+    required this.painScore,
+    required this.energy,
+    required this.tooEasyExercises,
+    required this.tooHardExercises,
+    required this.completedAllSets,
+    required this.exerciseLogs,
+    required this.notes,
+    required this.adaptationReason,
+  });
+
+  final int difficulty;
+  final int painScore;
+  final String energy;
+  final List<String> tooEasyExercises;
+  final List<String> tooHardExercises;
+  final bool completedAllSets;
+  final List<Map<String, dynamic>> exerciseLogs;
+  final String notes;
+  final String? adaptationReason;
+}
+
 enum _ChangeType { adaptWeek, easeToday, swapToday }
 
 class _WorkoutData {
   const _WorkoutData({
     required this.today,
     required this.weekDays,
+    required this.currentDayIndex,
     required this.targets,
     required this.hasLockedContent,
     required this.adaptIfMissed,
     required this.missedMessage,
+    required this.adaptationBanner,
   });
 
   final _WorkoutDayUi today;
   final List<_WorkoutDayUi> weekDays;
+  final int currentDayIndex;
   final List<_TargetUi> targets;
   final bool hasLockedContent;
   final bool adaptIfMissed;
   final String? missedMessage;
+  final String? adaptationBanner;
 }
 
 class _WorkoutDayUi {
   const _WorkoutDayUi({
+    required this.dayIndex,
     required this.date,
     required this.type,
     required this.exercises,
@@ -3364,14 +4299,17 @@ class _WorkoutDayUi {
     required this.isLocked,
   });
 
+  final int dayIndex;
   final DateTime date;
   final String type;
   final List<_ExerciseUi> exercises;
   final int estimatedMinutes;
   final _WorkoutStatus status;
   final bool isLocked;
+  bool get isRestDay => type.toLowerCase().contains('rest');
 
   _WorkoutDayUi copyWith({
+    int? dayIndex,
     DateTime? date,
     String? type,
     List<_ExerciseUi>? exercises,
@@ -3380,6 +4318,7 @@ class _WorkoutDayUi {
     bool? isLocked,
   }) {
     return _WorkoutDayUi(
+      dayIndex: dayIndex ?? this.dayIndex,
       date: date ?? this.date,
       type: type ?? this.type,
       exercises: exercises ?? this.exercises,
@@ -3399,6 +4338,9 @@ class _ExerciseUi {
     required this.reps,
     required this.level,
     required this.category,
+    this.restSeconds = 90,
+    this.intensityTarget = 'Moderate',
+    this.altExercises = const <String>[],
   });
 
   final String name;
@@ -3406,6 +4348,9 @@ class _ExerciseUi {
   final String reps;
   final int level;
   final String category;
+  final int restSeconds;
+  final String intensityTarget;
+  final List<String> altExercises;
 
   _ExerciseUi copyWith({
     String? name,
@@ -3413,6 +4358,9 @@ class _ExerciseUi {
     String? reps,
     int? level,
     String? category,
+    int? restSeconds,
+    String? intensityTarget,
+    List<String>? altExercises,
   }) {
     return _ExerciseUi(
       name: name ?? this.name,
@@ -3420,6 +4368,9 @@ class _ExerciseUi {
       reps: reps ?? this.reps,
       level: level ?? this.level,
       category: category ?? this.category,
+      restSeconds: restSeconds ?? this.restSeconds,
+      intensityTarget: intensityTarget ?? this.intensityTarget,
+      altExercises: altExercises ?? this.altExercises,
     );
   }
 }

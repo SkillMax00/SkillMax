@@ -60,4 +60,16 @@ class TrainingDataRepository {
         .doc(result.id)
         .set(result.toMap(), SetOptions(merge: true));
   }
+
+  Future<void> updateUserProfile(
+    String userId,
+    Map<String, dynamic> patch,
+  ) async {
+    await _firestore
+        .collection('users')
+        .doc(userId)
+        .collection('profile')
+        .doc('current')
+        .set(patch, SetOptions(merge: true));
+  }
 }

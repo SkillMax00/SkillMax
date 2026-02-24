@@ -117,10 +117,11 @@ class PlanGenerationService {
     final length = profile.workoutLength ?? '25-35';
 
     final weeklySplit = _buildWeeklySplit(days);
-    final scheduleDays = List<PlanScheduleDay>.generate(days, (index) {
+    final sequence = _buildPlanSequence(weeklySplit, daysPerWeek: days);
+    final scheduleDays = List<PlanScheduleDay>.generate(14, (index) {
       return PlanScheduleDay(
         date: weekStart.add(Duration(days: index)),
-        type: weeklySplit[index % weeklySplit.length],
+        type: sequence[index % sequence.length],
       );
     });
 
@@ -157,7 +158,10 @@ class PlanGenerationService {
       ],
       generator: 'fallback',
       activeWeekStartDate: weekStart,
+      startDate: null,
+      currentDayIndex: 1,
       scheduleDays: scheduleDays,
+      dayHistory: const <PlanDayHistory>[],
       skillTracks: profile.skills
           .take(3)
           .map(
@@ -176,6 +180,20 @@ class PlanGenerationService {
       ],
       workoutDays: workoutDays,
     );
+  }
+
+  List<String> _buildPlanSequence(List<String> split, {required int daysPerWeek}) {
+    final normalized = split.isEmpty ? <String>['Full Body + Skill'] : split;
+    final trainingDays = daysPerWeek.clamp(2, 6);
+    final sequence = <String>[];
+    for (var i = 0; i < 7; i++) {
+      if (i < trainingDays) {
+        sequence.add(normalized[i % normalized.length]);
+      } else {
+        sequence.add('Rest Day');
+      }
+    }
+    return sequence;
   }
 
   List<String> _buildWeeklySplit(int days) {
@@ -226,6 +244,40 @@ class PlanGenerationService {
     required bool isNoEquipment,
   }) {
     final lower = type.toLowerCase();
+    if (lower.contains('rest')) {
+      return const <WorkoutExercise>[
+        WorkoutExercise(
+          id: 'rest_recovery_1',
+          name: '90/90 Hip Switch',
+          category: 'recovery',
+          progressionLevel: 1,
+          sets: 2,
+          reps: '45s',
+          restSeconds: 30,
+          altExercises: <String>['Seated Hip Rotation'],
+        ),
+        WorkoutExercise(
+          id: 'rest_recovery_2',
+          name: 'Thoracic Open Book',
+          category: 'recovery',
+          progressionLevel: 1,
+          sets: 2,
+          reps: '8/side',
+          restSeconds: 30,
+          altExercises: <String>['Thread the Needle'],
+        ),
+        WorkoutExercise(
+          id: 'rest_recovery_3',
+          name: 'Box Breathing',
+          category: 'recovery',
+          progressionLevel: 1,
+          sets: 3,
+          reps: '60s',
+          restSeconds: 20,
+          altExercises: <String>['Nasal Breathing Walk'],
+        ),
+      ];
+    }
     final pullNeedsRegression = (profile.baselinePull ?? '').toLowerCase().contains('0');
 
     if (lower.contains('pull')) {

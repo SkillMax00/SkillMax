@@ -10,7 +10,10 @@ class TrainingPlan {
     required this.blocks,
     required this.generator,
     this.activeWeekStartDate,
+    this.startDate,
+    this.currentDayIndex = 1,
     this.scheduleDays = const <PlanScheduleDay>[],
+    this.dayHistory = const <PlanDayHistory>[],
     this.skillTracks = const <SkillTrackProgress>[],
     this.volumeTargets = const <VolumeTarget>[],
     this.progressionRules = const <String>[],
@@ -27,7 +30,10 @@ class TrainingPlan {
   final List<String> blocks;
   final String generator;
   final DateTime? activeWeekStartDate;
+  final DateTime? startDate;
+  final int currentDayIndex;
   final List<PlanScheduleDay> scheduleDays;
+  final List<PlanDayHistory> dayHistory;
   final List<SkillTrackProgress> skillTracks;
   final List<VolumeTarget> volumeTargets;
   final List<String> progressionRules;
@@ -45,7 +51,10 @@ class TrainingPlan {
       'blocks': blocks,
       'generator': generator,
       'activeWeekStartDate': activeWeekStartDate?.toIso8601String(),
+      'startDate': startDate?.toIso8601String(),
+      'currentDayIndex': currentDayIndex,
       'scheduleDays': scheduleDays.map((e) => e.toMap()).toList(),
+      'dayHistory': dayHistory.map((e) => e.toMap()).toList(),
       'skillTracks': skillTracks.map((e) => e.toMap()).toList(),
       'volumeTargets': volumeTargets.map((e) => e.toMap()).toList(),
       'progressionRules': progressionRules,
@@ -75,9 +84,15 @@ class TrainingPlan {
       activeWeekStartDate: DateTime.tryParse(
         map['activeWeekStartDate']?.toString() ?? '',
       ),
+      startDate: DateTime.tryParse(map['startDate']?.toString() ?? ''),
+      currentDayIndex: (map['currentDayIndex'] as num?)?.toInt() ?? 1,
       scheduleDays: (map['scheduleDays'] as List<dynamic>? ?? const <dynamic>[])
           .whereType<Map<String, dynamic>>()
           .map(PlanScheduleDay.fromMap)
+          .toList(growable: false),
+      dayHistory: (map['dayHistory'] as List<dynamic>? ?? const <dynamic>[])
+          .whereType<Map<String, dynamic>>()
+          .map(PlanDayHistory.fromMap)
           .toList(growable: false),
       skillTracks: (map['skillTracks'] as List<dynamic>? ?? const <dynamic>[])
           .whereType<Map<String, dynamic>>()
@@ -95,6 +110,44 @@ class TrainingPlan {
           .whereType<Map<String, dynamic>>()
           .map(WorkoutDayPlan.fromMap)
           .toList(growable: false),
+    );
+  }
+}
+
+class PlanDayHistory {
+  const PlanDayHistory({
+    required this.calendarDate,
+    required this.planDayIndex,
+    required this.status,
+    this.completedAt,
+    this.notes,
+  });
+
+  final DateTime calendarDate;
+  final int planDayIndex;
+  final String status;
+  final DateTime? completedAt;
+  final String? notes;
+
+  Map<String, dynamic> toMap() {
+    return <String, dynamic>{
+      'calendarDate': calendarDate.toIso8601String(),
+      'planDayIndex': planDayIndex,
+      'status': status,
+      'completedAt': completedAt?.toIso8601String(),
+      'notes': notes,
+    };
+  }
+
+  factory PlanDayHistory.fromMap(Map<String, dynamic> map) {
+    return PlanDayHistory(
+      calendarDate:
+          DateTime.tryParse(map['calendarDate']?.toString() ?? '') ??
+          DateTime.now(),
+      planDayIndex: (map['planDayIndex'] as num?)?.toInt() ?? 1,
+      status: map['status']?.toString() ?? 'scheduled',
+      completedAt: DateTime.tryParse(map['completedAt']?.toString() ?? ''),
+      notes: map['notes']?.toString(),
     );
   }
 }

@@ -95,6 +95,9 @@ class _TrialIntroScreenState extends ConsumerState<TrialIntroScreen> {
         idToken: idToken,
       );
       await _repository.saveTrainingPlan(user.uid, plan);
+      await _repository.updateUserProfile(user.uid, <String, dynamic>{
+        'showPlanOverviewOnNextOpen': true,
+      });
       await _repository
           .savePlanGenerationDiagnostic(user.uid, <String, dynamic>{
             'generatedAt': DateTime.now().toIso8601String(),

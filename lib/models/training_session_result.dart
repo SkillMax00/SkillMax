@@ -6,6 +6,10 @@ class TrainingSessionResult {
     required this.completed,
     required this.difficulty,
     required this.painScore,
+    this.energy,
+    this.tooEasyExercises = const <String>[],
+    this.tooHardExercises = const <String>[],
+    this.exerciseLogs = const <Map<String, dynamic>>[],
     this.notes,
   });
 
@@ -15,6 +19,10 @@ class TrainingSessionResult {
   final bool completed;
   final int difficulty;
   final int painScore;
+  final String? energy;
+  final List<String> tooEasyExercises;
+  final List<String> tooHardExercises;
+  final List<Map<String, dynamic>> exerciseLogs;
   final String? notes;
 
   Map<String, dynamic> toMap() {
@@ -25,6 +33,10 @@ class TrainingSessionResult {
       'completed': completed,
       'difficulty': difficulty,
       'painScore': painScore,
+      'energy': energy,
+      'tooEasyExercises': tooEasyExercises,
+      'tooHardExercises': tooHardExercises,
+      'exerciseLogs': exerciseLogs,
       'notes': notes,
     };
   }
