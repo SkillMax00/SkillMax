@@ -1,14 +1,19 @@
 import 'dart:async';
 
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:in_app_review/in_app_review.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import 'signup_view.dart';
 import 'trial_intro_view.dart';
 
-const _kCanvas = Colors.white;
-const _kInk = Color(0xFF121017);
-const _kSubtleText = Color(0xFF706C77);
-const _kTile = Color(0xFFF6F6F8);
+const _kCanvas = Color(0xFFF6FAFE);
+const _kBlue = Color(0xFF1E628C);
+const _kBlueDeep = Color(0xFF134865);
+const _kText = Color(0xFF153042);
+const _kSubtleText = Color(0xFF648095);
+const _kTile = Color(0xFFEAF4FB);
 
 class OnboardingFlowView extends StatefulWidget {
   const OnboardingFlowView({super.key});
@@ -53,8 +58,14 @@ class OnboardingStep {
 class _OnboardingFlowViewState extends State<OnboardingFlowView> {
   final PageController _pageController = PageController();
   final TextEditingController _referralController = TextEditingController();
-  final TextEditingController _heightController = TextEditingController(
-    text: '68',
+  final TextEditingController _heightFeetController = TextEditingController(
+    text: '5',
+  );
+  final TextEditingController _heightInchesController = TextEditingController(
+    text: '8',
+  );
+  final TextEditingController _heightCmController = TextEditingController(
+    text: '173',
   );
   final TextEditingController _weightController = TextEditingController(
     text: '160',
@@ -68,6 +79,9 @@ class _OnboardingFlowViewState extends State<OnboardingFlowView> {
   int _rating = 0;
   int _index = 0;
   Timer? _loadingAdvanceTimer;
+  Timer? _loadingTickTimer;
+  double _loadingProgress = 0;
+  bool _didAskForStoreReview = false;
 
   final List<OnboardingStep> _steps = const [
     OnboardingStep(
@@ -78,9 +92,7 @@ class _OnboardingFlowViewState extends State<OnboardingFlowView> {
         'Instagram',
         'YouTube',
         'App Store',
-        'Friend',
-        'Coach',
-        'Reddit',
+        'Google Search',
         'Other',
       ],
     ),
@@ -93,7 +105,7 @@ class _OnboardingFlowViewState extends State<OnboardingFlowView> {
       id: 'proof',
       headline: 'Adaptive training = long-term results',
       subhead:
-          'SkillMax updates your plan when you plateau so progress does not stop after week 2.',
+          'SkillMax updates your plan when you plateau so progress does not stall after week 2.',
       type: OnboardingStepType.chart,
     ),
     OnboardingStep(
@@ -222,7 +234,7 @@ class _OnboardingFlowViewState extends State<OnboardingFlowView> {
     OnboardingStep(
       id: 'rating',
       headline: 'How does this feel so far?',
-      subhead: 'This helps us improve.',
+      subhead: 'Your feedback directly improves SkillMax.',
       type: OnboardingStepType.rating,
     ),
     OnboardingStep(
@@ -246,9 +258,9 @@ class _OnboardingFlowViewState extends State<OnboardingFlowView> {
     ),
     OnboardingStep(
       id: 'plan_ready',
-      headline: 'Congratulations - your SkillMax plan is ready!',
+      headline: 'Your SkillMax plan is ready',
       subhead:
-          'Based on your answers, your schedule and progressions are now personalized.',
+          'Based on your answers, your schedule and progressions are personalized.',
       type: OnboardingStepType.planReady,
     ),
   ];
@@ -256,9 +268,12 @@ class _OnboardingFlowViewState extends State<OnboardingFlowView> {
   @override
   void dispose() {
     _loadingAdvanceTimer?.cancel();
+    _loadingTickTimer?.cancel();
     _pageController.dispose();
     _referralController.dispose();
-    _heightController.dispose();
+    _heightFeetController.dispose();
+    _heightInchesController.dispose();
+    _heightCmController.dispose();
     _weightController.dispose();
     super.dispose();
   }
@@ -266,12 +281,35 @@ class _OnboardingFlowViewState extends State<OnboardingFlowView> {
   void _handlePageChanged(int page) {
     setState(() => _index = page);
     _loadingAdvanceTimer?.cancel();
+    _loadingTickTimer?.cancel();
+
     if (_steps[page].type == OnboardingStepType.loading) {
-      _loadingAdvanceTimer = Timer(const Duration(milliseconds: 2200), () {
-        if (!mounted || _index != page) return;
-        _next();
-      });
+      _startLoadingAnimation(page);
     }
+  }
+
+  void _startLoadingAnimation(int page) {
+    setState(() => _loadingProgress = 0);
+
+    _loadingTickTimer = Timer.periodic(const Duration(milliseconds: 70), (
+      timer,
+    ) {
+      if (!mounted || _index != page) {
+        timer.cancel();
+        return;
+      }
+
+      final next = (_loadingProgress + 0.028).clamp(0.0, 1.0);
+      setState(() => _loadingProgress = next);
+      if (next >= 1.0) {
+        timer.cancel();
+      }
+    });
+
+    _loadingAdvanceTimer = Timer(const Duration(milliseconds: 2600), () {
+      if (!mounted || _index != page) return;
+      _next();
+    });
   }
 
   Future<void> _presentSignUpFlow() async {
@@ -302,16 +340,21 @@ class _OnboardingFlowViewState extends State<OnboardingFlowView> {
       payload[key] = value.toList(growable: false);
     });
 
-    final height = int.tryParse(_heightController.text.trim());
     final weight = int.tryParse(_weightController.text.trim());
+    final cmHeight = int.tryParse(_heightCmController.text.trim());
+    final feet = int.tryParse(_heightFeetController.text.trim()) ?? 0;
+    final inches = int.tryParse(_heightInchesController.text.trim()) ?? 0;
+    final totalInches = (feet * 12) + inches;
 
-    payload['height'] = height;
+    payload['height'] = _useImperial ? totalInches : cmHeight;
     payload['weight'] = weight;
     payload['height_unit'] = _useImperial ? 'in' : 'cm';
+    payload['height_feet'] = _useImperial ? feet : null;
+    payload['height_inches'] = _useImperial ? inches : null;
     payload['weight_unit'] = _useImperial ? 'lb' : 'kg';
     payload['birthday'] = _birthday?.toIso8601String();
     payload['rating'] = _rating;
-    payload['referral_code'] = _referralController.text.trim();
+    payload['referral_code'] = _referralController.text.trim().toUpperCase();
 
     return payload;
   }
@@ -327,9 +370,21 @@ class _OnboardingFlowViewState extends State<OnboardingFlowView> {
       case OnboardingStepType.trust:
         return true;
       case OnboardingStepType.heightWeight:
-        final height = int.tryParse(_heightController.text.trim());
         final weight = int.tryParse(_weightController.text.trim());
-        return height != null && height > 0 && weight != null && weight > 0;
+        if (weight == null || weight <= 0) return false;
+
+        if (_useImperial) {
+          final feet = int.tryParse(_heightFeetController.text.trim()) ?? -1;
+          final inches =
+              int.tryParse(_heightInchesController.text.trim()) ?? -1;
+          return feet >= 0 &&
+              inches >= 0 &&
+              inches <= 11 &&
+              (feet > 0 || inches > 0);
+        }
+
+        final cm = int.tryParse(_heightCmController.text.trim());
+        return cm != null && cm > 0;
       case OnboardingStepType.date:
         return _birthday != null;
       case OnboardingStepType.rating:
@@ -371,6 +426,92 @@ class _OnboardingFlowViewState extends State<OnboardingFlowView> {
     });
   }
 
+  Future<void> _triggerStoreReview() async {
+    final review = InAppReview.instance;
+    try {
+      if (await review.isAvailable()) {
+        await review.requestReview();
+      } else {
+        await review.openStoreListing();
+      }
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Unable to open review flow right now.')),
+      );
+    }
+  }
+
+  Future<void> _requestNativeNotificationPermission() async {
+    try {
+      await Permission.notification.request();
+    } catch (_) {}
+  }
+
+  Future<void> _openBirthdayPicker() async {
+    final now = DateTime.now();
+    final initialDate =
+        _birthday ?? DateTime(now.year - 20, now.month, now.day);
+
+    if (Theme.of(context).platform == TargetPlatform.iOS) {
+      var tempDate = initialDate;
+      await showCupertinoModalPopup<void>(
+        context: context,
+        builder: (context) {
+          return Container(
+            height: 320,
+            color: CupertinoColors.systemBackground.resolveFrom(context),
+            child: Column(
+              children: [
+                SizedBox(
+                  height: 44,
+                  child: Row(
+                    children: [
+                      CupertinoButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: const Text('Cancel'),
+                      ),
+                      const Spacer(),
+                      CupertinoButton(
+                        onPressed: () {
+                          setState(() => _birthday = tempDate);
+                          Navigator.of(context).pop();
+                        },
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: const Text('Done'),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: CupertinoDatePicker(
+                    mode: CupertinoDatePickerMode.date,
+                    maximumDate: now,
+                    minimumDate: DateTime(1930),
+                    initialDateTime: initialDate,
+                    onDateTimeChanged: (value) => tempDate = value,
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      );
+      return;
+    }
+
+    final selected = await showDatePicker(
+      context: context,
+      initialDate: initialDate,
+      firstDate: DateTime(1930),
+      lastDate: now,
+    );
+    if (selected != null) {
+      setState(() => _birthday = selected);
+    }
+  }
+
   void _next() {
     if (!_pageController.hasClients) return;
     if (_index == _steps.length - 1) return;
@@ -388,9 +529,15 @@ class _OnboardingFlowViewState extends State<OnboardingFlowView> {
     );
   }
 
-  void _onContinue() {
+  Future<void> _onContinue() async {
     final step = _steps[_index];
     if (!_isStepComplete(step)) return;
+
+    if (step.id == 'notifications' &&
+        _singleAnswers['notifications'] == 'Allow') {
+      await _requestNativeNotificationPermission();
+    }
+
     _next();
   }
 
@@ -403,7 +550,7 @@ class _OnboardingFlowViewState extends State<OnboardingFlowView> {
           icon: Icon(
             Icons.arrow_back_ios_new,
             size: 18,
-            color: _index > 0 ? _kInk : Colors.black26,
+            color: _index > 0 ? _kBlue : Colors.black26,
           ),
         ),
         Expanded(
@@ -411,9 +558,9 @@ class _OnboardingFlowViewState extends State<OnboardingFlowView> {
             borderRadius: BorderRadius.circular(20),
             child: LinearProgressIndicator(
               value: progress,
-              minHeight: 4,
-              color: Colors.black,
-              backgroundColor: const Color(0xFFECECEF),
+              minHeight: 6,
+              color: _kBlue,
+              backgroundColor: const Color(0xFFDCEAF5),
             ),
           ),
         ),
@@ -428,10 +575,10 @@ class _OnboardingFlowViewState extends State<OnboardingFlowView> {
         Text(
           step.headline,
           style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-            color: _kInk,
-            fontSize: 38,
+            color: _kText,
+            fontSize: 36,
             fontWeight: FontWeight.w800,
-            height: 1.0,
+            height: 1.02,
           ),
         ),
         if (step.subhead != null) ...[
@@ -440,7 +587,7 @@ class _OnboardingFlowViewState extends State<OnboardingFlowView> {
             step.subhead!,
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
               color: _kSubtleText,
-              fontWeight: FontWeight.w500,
+              fontWeight: FontWeight.w600,
             ),
           ),
         ],
@@ -489,21 +636,29 @@ class _OnboardingFlowViewState extends State<OnboardingFlowView> {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: const Color(0xFFE2DFE8)),
+        border: Border.all(color: const Color(0xFFD8EAF5)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color.fromRGBO(30, 98, 140, 0.08),
+            blurRadius: 16,
+            offset: Offset(0, 8),
+          ),
+        ],
       ),
       child: Column(
         children: [
           SizedBox(
-            height: 210,
+            height: 220,
             child: CustomPaint(painter: _ProofChartPainter()),
           ),
-          const SizedBox(height: 12),
-          Text(
-            'SkillMax rises steadily while random workouts often stall.',
-            style: Theme.of(
-              context,
-            ).textTheme.bodySmall?.copyWith(color: _kSubtleText),
-            textAlign: TextAlign.center,
+          const SizedBox(height: 10),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: const [
+              _LegendDot(color: _kBlue, text: 'SkillMax adaptive plan'),
+              SizedBox(width: 10),
+              _LegendDot(color: Color(0xFF8AA4B6), text: 'Random routine'),
+            ],
           ),
         ],
       ),
@@ -511,7 +666,6 @@ class _OnboardingFlowViewState extends State<OnboardingFlowView> {
   }
 
   Widget _buildHeightWeight() {
-    final heightUnit = _useImperial ? 'in' : 'cm';
     final weightUnit = _useImperial ? 'lb' : 'kg';
 
     return Column(
@@ -542,22 +696,56 @@ class _OnboardingFlowViewState extends State<OnboardingFlowView> {
             ],
           ),
         ),
-        const SizedBox(height: 16),
+        const SizedBox(height: 14),
         Container(
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: const Color(0xFFE2DFE8)),
+            border: Border.all(color: const Color(0xFFD8EAF5)),
           ),
           child: Column(
             children: [
-              _InputRow(
-                label: 'Height',
-                controller: _heightController,
-                suffix: heightUnit,
-                onChanged: (_) => setState(() {}),
-              ),
+              if (_useImperial) ...[
+                const Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Height',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w700,
+                      color: _kText,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _InputRow(
+                        label: 'Feet',
+                        controller: _heightFeetController,
+                        suffix: 'ft',
+                        onChanged: (_) => setState(() {}),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _InputRow(
+                        label: 'Inches',
+                        controller: _heightInchesController,
+                        suffix: 'in',
+                        onChanged: (_) => setState(() {}),
+                      ),
+                    ),
+                  ],
+                ),
+              ] else
+                _InputRow(
+                  label: 'Height',
+                  controller: _heightCmController,
+                  suffix: 'cm',
+                  onChanged: (_) => setState(() {}),
+                ),
               const SizedBox(height: 10),
               _InputRow(
                 label: 'Weight',
@@ -567,13 +755,6 @@ class _OnboardingFlowViewState extends State<OnboardingFlowView> {
               ),
             ],
           ),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          _useImperial ? 'Imperial selected' : 'Metric selected',
-          style: Theme.of(
-            context,
-          ).textTheme.bodySmall?.copyWith(color: _kSubtleText),
         ),
       ],
     );
@@ -589,17 +770,7 @@ class _OnboardingFlowViewState extends State<OnboardingFlowView> {
         _SelectionTile(
           label: text,
           selected: _birthday != null,
-          onTap: () async {
-            final date = await showDatePicker(
-              context: context,
-              initialDate: DateTime(1998, 1, 1),
-              firstDate: DateTime(1930),
-              lastDate: DateTime.now(),
-            );
-            if (date != null) {
-              setState(() => _birthday = date);
-            }
-          },
+          onTap: _openBirthdayPicker,
         ),
       ],
     );
@@ -625,13 +796,19 @@ class _OnboardingFlowViewState extends State<OnboardingFlowView> {
           children: List.generate(5, (i) {
             final active = i < _rating;
             return IconButton(
-              onPressed: () => setState(() => _rating = i + 1),
+              onPressed: () {
+                setState(() => _rating = i + 1);
+                if (!_didAskForStoreReview) {
+                  _didAskForStoreReview = true;
+                  _triggerStoreReview();
+                }
+              },
               icon: Icon(
                 active ? Icons.star_rounded : Icons.star_outline_rounded,
                 color: active
-                    ? const Color(0xFFF7B500)
-                    : const Color(0xFFC9C6D1),
-                size: 36,
+                    ? const Color(0xFFFCB230)
+                    : const Color(0xFFB9D2E3),
+                size: 38,
               ),
             );
           }),
@@ -644,6 +821,7 @@ class _OnboardingFlowViewState extends State<OnboardingFlowView> {
     return TextField(
       controller: _referralController,
       textInputAction: TextInputAction.done,
+      textCapitalization: TextCapitalization.characters,
       decoration: InputDecoration(
         hintText: 'Enter referral code',
         filled: true,
@@ -654,37 +832,136 @@ class _OnboardingFlowViewState extends State<OnboardingFlowView> {
         ),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16),
-          borderSide: const BorderSide(color: Color(0xFFE2DFE8)),
+          borderSide: const BorderSide(color: Color(0xFFD8EAF5)),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16),
-          borderSide: const BorderSide(color: Color(0xFFE2DFE8)),
+          borderSide: const BorderSide(color: Color(0xFFD8EAF5)),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(16),
+          borderSide: const BorderSide(color: _kBlue, width: 1.4),
         ),
       ),
     );
   }
 
   Widget _buildLoadingStep() {
-    return Column(
-      children: const [
-        SizedBox(height: 8),
-        LinearProgressIndicator(
-          value: 0.78,
-          minHeight: 8,
-          color: Colors.black,
-          backgroundColor: Color(0xFFECECEF),
-        ),
-        SizedBox(height: 16),
-        _ChecklistRow(text: 'Weekly schedule'),
-        SizedBox(height: 8),
-        _ChecklistRow(text: 'Skill progressions'),
-        SizedBox(height: 8),
-        _ChecklistRow(text: 'Strength blocks'),
-        SizedBox(height: 8),
-        _ChecklistRow(text: 'Mobility / prehab'),
-        SizedBox(height: 8),
-        _ChecklistRow(text: 'Recovery targets'),
-      ],
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFD8EAF5)),
+      ),
+      child: Column(
+        children: [
+          const SizedBox(height: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: LinearProgressIndicator(
+              value: _loadingProgress,
+              minHeight: 10,
+              color: _kBlue,
+              backgroundColor: const Color(0xFFDCEAF5),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Align(
+            alignment: Alignment.centerRight,
+            child: Text(
+              '${(_loadingProgress * 100).round()}%',
+              style: const TextStyle(
+                color: _kSubtleText,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          _ChecklistRow(
+            text: 'Weekly schedule',
+            active: _loadingProgress > 0.1,
+          ),
+          const SizedBox(height: 8),
+          _ChecklistRow(
+            text: 'Skill progressions',
+            active: _loadingProgress > 0.3,
+          ),
+          const SizedBox(height: 8),
+          _ChecklistRow(
+            text: 'Strength blocks',
+            active: _loadingProgress > 0.5,
+          ),
+          const SizedBox(height: 8),
+          _ChecklistRow(
+            text: 'Mobility / prehab',
+            active: _loadingProgress > 0.7,
+          ),
+          const SizedBox(height: 8),
+          _ChecklistRow(
+            text: 'Recovery targets',
+            active: _loadingProgress > 0.9,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openPlanPreview() async {
+    final days = _singleAnswers['days_per_week'] ?? '4';
+    final goal = _singleAnswers['goal'] ?? 'Build Strength & Muscle';
+    final skills = (_multiAnswers['skills'] ?? <String>{}).take(2).join(' + ');
+
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(18, 18, 18, 22),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Plan preview',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    color: _kText,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'You\'ll get a $days-day weekly split focused on "$goal".',
+                  style: const TextStyle(color: _kSubtleText),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Skill focus: ${skills.isEmpty ? 'Pull-up + Handstand' : skills}',
+                  style: const TextStyle(color: _kSubtleText),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Full day-by-day details unlock after signup and subscription.',
+                  style: TextStyle(color: _kSubtleText),
+                ),
+                const SizedBox(height: 14),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    style: ElevatedButton.styleFrom(backgroundColor: _kBlue),
+                    child: const Text('Got it'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -700,38 +977,63 @@ class _OnboardingFlowViewState extends State<OnboardingFlowView> {
         Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: const Color(0xFFE2DFE8)),
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xFFE8F3FB), Color(0xFFF7FBFF)],
+            ),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: const Color(0xFFD8EAF5)),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
                 'Weekly plan',
-                style: Theme.of(context).textTheme.titleMedium,
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  color: _kText,
+                  fontWeight: FontWeight.w800,
+                ),
               ),
               const SizedBox(height: 6),
-              Text(
+              const Text(
                 'Push / Pull / Legs + Core / Skill Focus',
-                style: Theme.of(context).textTheme.bodyMedium,
+                style: TextStyle(
+                  color: _kSubtleText,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
               const SizedBox(height: 12),
               Text(
                 'Skill track',
-                style: Theme.of(context).textTheme.titleMedium,
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  color: _kText,
+                  fontWeight: FontWeight.w800,
+                ),
               ),
               const SizedBox(height: 6),
-              Text(skillText, style: Theme.of(context).textTheme.bodyMedium),
+              Text(
+                skillText,
+                style: const TextStyle(
+                  color: _kSubtleText,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
               const SizedBox(height: 12),
               Text(
                 'Session setup',
-                style: Theme.of(context).textTheme.titleMedium,
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  color: _kText,
+                  fontWeight: FontWeight.w800,
+                ),
               ),
               const SizedBox(height: 6),
               Text(
                 '$days days/week, $length sessions',
-                style: Theme.of(context).textTheme.bodyMedium,
+                style: const TextStyle(
+                  color: _kSubtleText,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ],
           ),
@@ -740,17 +1042,24 @@ class _OnboardingFlowViewState extends State<OnboardingFlowView> {
         ElevatedButton(
           onPressed: _presentSignUpFlow,
           style: ElevatedButton.styleFrom(
-            backgroundColor: _kInk,
+            backgroundColor: _kBlue,
             foregroundColor: Colors.white,
             padding: const EdgeInsets.symmetric(vertical: 17),
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(30),
             ),
           ),
-          child: const Text("Let's get started!"),
+          child: const Text('Unlock my plan'),
         ),
         const SizedBox(height: 10),
-        OutlinedButton(onPressed: () {}, child: const Text('Preview plan')),
+        OutlinedButton(
+          onPressed: _openPlanPreview,
+          style: OutlinedButton.styleFrom(
+            foregroundColor: _kBlue,
+            side: const BorderSide(color: Color(0xFFBCD8E9)),
+          ),
+          child: const Text('Preview plan'),
+        ),
       ],
     );
   }
@@ -827,11 +1136,11 @@ class _OnboardingFlowViewState extends State<OnboardingFlowView> {
                       ? _onContinue
                       : null,
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: _kInk,
+                    backgroundColor: _kBlue,
                     foregroundColor: Colors.white,
                     minimumSize: const Size.fromHeight(56),
-                    disabledBackgroundColor: const Color(0xFFB8B8BD),
-                    disabledForegroundColor: const Color(0xFFF2F2F4),
+                    disabledBackgroundColor: const Color(0xFFADC7D7),
+                    disabledForegroundColor: const Color(0xFFF2F7FB),
                   ),
                   child: const Text('Continue'),
                 ),
@@ -868,7 +1177,7 @@ class _SelectionTile extends StatelessWidget {
                 ? const LinearGradient(
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
-                    colors: [Color(0xFF101015), Color(0xFF18181D)],
+                    colors: [Color(0xFF1E628C), Color(0xFF134865)],
                   )
                 : null,
             color: selected ? null : _kTile,
@@ -885,12 +1194,12 @@ class _SelectionTile extends StatelessWidget {
                   shape: BoxShape.circle,
                   color: selected ? Colors.white : Colors.transparent,
                   border: Border.all(
-                    color: selected ? Colors.white : const Color(0xFFC6C1CD),
+                    color: selected ? Colors.white : const Color(0xFF9AB7C9),
                     width: 2,
                   ),
                 ),
                 child: selected
-                    ? const Icon(Icons.check, size: 14, color: _kInk)
+                    ? const Icon(Icons.check, size: 14, color: _kBlueDeep)
                     : null,
               ),
               const SizedBox(width: 10),
@@ -898,7 +1207,7 @@ class _SelectionTile extends StatelessWidget {
                 child: Text(
                   label,
                   style: TextStyle(
-                    color: selected ? Colors.white : _kInk,
+                    color: selected ? Colors.white : _kText,
                     fontWeight: FontWeight.w600,
                     fontSize: 16,
                   ),
@@ -938,7 +1247,7 @@ class _UnitButton extends StatelessWidget {
           child: Text(
             label,
             style: TextStyle(
-              color: _kInk,
+              color: _kBlueDeep,
               fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
             ),
           ),
@@ -967,9 +1276,15 @@ class _InputRow extends StatelessWidget {
       children: [
         Row(
           children: [
-            Text(label, style: const TextStyle(fontWeight: FontWeight.w700)),
+            Text(
+              label,
+              style: const TextStyle(
+                fontWeight: FontWeight.w700,
+                color: _kText,
+              ),
+            ),
             const Spacer(),
-            Text(suffix),
+            Text(suffix, style: const TextStyle(color: _kSubtleText)),
           ],
         ),
         const SizedBox(height: 8),
@@ -987,11 +1302,15 @@ class _InputRow extends StatelessWidget {
             ),
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: Color(0xFFE2DFE8)),
+              borderSide: const BorderSide(color: Color(0xFFD8EAF5)),
             ),
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: Color(0xFFE2DFE8)),
+              borderSide: const BorderSide(color: Color(0xFFD8EAF5)),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: _kBlue, width: 1.4),
             ),
           ),
         ),
@@ -1012,16 +1331,19 @@ class _InfoTile extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFE2DFE8)),
+        border: Border.all(color: const Color(0xFFD8EAF5)),
       ),
       child: Row(
         children: [
-          const Icon(Icons.check_circle_outline, color: _kInk),
+          const Icon(Icons.check_circle_outline, color: _kBlue),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
               text,
-              style: const TextStyle(fontWeight: FontWeight.w600),
+              style: const TextStyle(
+                fontWeight: FontWeight.w600,
+                color: _kText,
+              ),
             ),
           ),
         ],
@@ -1031,17 +1353,59 @@ class _InfoTile extends StatelessWidget {
 }
 
 class _ChecklistRow extends StatelessWidget {
-  const _ChecklistRow({required this.text});
+  const _ChecklistRow({required this.text, required this.active});
 
+  final String text;
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedOpacity(
+      duration: const Duration(milliseconds: 220),
+      opacity: active ? 1 : 0.38,
+      child: Row(
+        children: [
+          Icon(
+            active ? Icons.check_circle : Icons.radio_button_unchecked,
+            color: active ? _kBlue : const Color(0xFF9AB7C9),
+            size: 18,
+          ),
+          const SizedBox(width: 8),
+          Text(
+            text,
+            style: const TextStyle(fontWeight: FontWeight.w600, color: _kText),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LegendDot extends StatelessWidget {
+  const _LegendDot({required this.color, required this.text});
+
+  final Color color;
   final String text;
 
   @override
   Widget build(BuildContext context) {
     return Row(
+      mainAxisSize: MainAxisSize.min,
       children: [
-        const Icon(Icons.check_circle, color: _kInk, size: 18),
-        const SizedBox(width: 8),
-        Text(text, style: const TextStyle(fontWeight: FontWeight.w600)),
+        Container(
+          width: 8,
+          height: 8,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        ),
+        const SizedBox(width: 6),
+        Text(
+          text,
+          style: const TextStyle(
+            color: _kSubtleText,
+            fontWeight: FontWeight.w600,
+            fontSize: 12,
+          ),
+        ),
       ],
     );
   }
@@ -1051,62 +1415,82 @@ class _ProofChartPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final grid = Paint()
-      ..color = const Color(0xFFE4E0E9)
+      ..color = const Color(0xFFE0EDF6)
       ..strokeWidth = 1;
 
-    for (int i = 1; i < 4; i++) {
-      final y = size.height * i / 4;
+    for (int i = 1; i < 5; i++) {
+      final y = size.height * i / 5;
       canvas.drawLine(Offset(0, y), Offset(size.width, y), grid);
     }
 
-    final skillMax = Paint()
-      ..color = _kInk
+    final adaptivePath = Path()
+      ..moveTo(0, size.height * 0.84)
+      ..cubicTo(
+        size.width * 0.16,
+        size.height * 0.72,
+        size.width * 0.4,
+        size.height * 0.51,
+        size.width * 0.66,
+        size.height * 0.32,
+      )
+      ..cubicTo(
+        size.width * 0.78,
+        size.height * 0.24,
+        size.width * 0.9,
+        size.height * 0.16,
+        size.width,
+        size.height * 0.1,
+      );
+
+    final adaptiveArea = Path.from(adaptivePath)
+      ..lineTo(size.width, size.height)
+      ..lineTo(0, size.height)
+      ..close();
+
+    final adaptiveFill = Paint()
+      ..color = const Color(0x221E628C)
+      ..style = PaintingStyle.fill;
+
+    final adaptiveLine = Paint()
+      ..color = _kBlue
       ..strokeWidth = 3
       ..style = PaintingStyle.stroke;
 
-    final random = Paint()
-      ..color = const Color(0xFF888392)
-      ..strokeWidth = 2.2
+    final randomPath = Path()
+      ..moveTo(0, size.height * 0.64)
+      ..lineTo(size.width * 0.16, size.height * 0.7)
+      ..lineTo(size.width * 0.32, size.height * 0.6)
+      ..lineTo(size.width * 0.48, size.height * 0.76)
+      ..lineTo(size.width * 0.64, size.height * 0.56)
+      ..lineTo(size.width * 0.8, size.height * 0.67)
+      ..lineTo(size.width, size.height * 0.58);
+
+    final randomLine = Paint()
+      ..color = const Color(0xFF8AA4B6)
+      ..strokeWidth = 2.4
       ..style = PaintingStyle.stroke;
 
-    final a = Path()
-      ..moveTo(0, size.height * 0.82)
-      ..cubicTo(
-        size.width * 0.22,
-        size.height * 0.68,
-        size.width * 0.55,
-        size.height * 0.42,
-        size.width,
-        size.height * 0.18,
-      );
+    canvas.drawPath(adaptiveArea, adaptiveFill);
+    canvas.drawPath(adaptivePath, adaptiveLine);
+    canvas.drawPath(randomPath, randomLine);
 
-    final b = Path()
-      ..moveTo(0, size.height * 0.55)
-      ..lineTo(size.width * 0.25, size.height * 0.57)
-      ..lineTo(size.width * 0.48, size.height * 0.76)
-      ..lineTo(size.width * 0.7, size.height * 0.44)
-      ..lineTo(size.width, size.height * 0.54);
-
-    canvas.drawPath(a, skillMax);
-    canvas.drawPath(b, random);
-
-    final labelStyle = TextStyle(
-      color: const Color(0xFF777382),
+    final axisStyle = TextStyle(
+      color: const Color(0xFF6A879A),
       fontSize: 11,
       fontWeight: FontWeight.w600,
     );
 
-    final tpStart = TextPainter(
-      text: TextSpan(text: 'Month 1', style: labelStyle),
+    final x1 = TextPainter(
+      text: TextSpan(text: 'Month 1', style: axisStyle),
       textDirection: TextDirection.ltr,
     )..layout();
-    tpStart.paint(canvas, Offset(0, size.height - 18));
+    x1.paint(canvas, Offset(0, size.height - 18));
 
-    final tpEnd = TextPainter(
-      text: TextSpan(text: 'Month 6', style: labelStyle),
+    final x2 = TextPainter(
+      text: TextSpan(text: 'Month 6', style: axisStyle),
       textDirection: TextDirection.ltr,
     )..layout();
-    tpEnd.paint(canvas, Offset(size.width - tpEnd.width, size.height - 18));
+    x2.paint(canvas, Offset(size.width - x2.width, size.height - 18));
   }
 
   @override

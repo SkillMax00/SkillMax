@@ -9,8 +9,8 @@ import '../../services/plan_generation_service.dart';
 import '../../services/training_data_repository.dart';
 
 const _kBg = Colors.white;
-const _kInk = Color(0xFF111111);
-const _kMuted = Color(0xFF666666);
+const _kInk = Color(0xFF1E628C);
+const _kMuted = Color(0xFF5F7C91);
 
 class TrialIntroScreen extends ConsumerStatefulWidget {
   const TrialIntroScreen({super.key, this.onboardingData});
@@ -46,13 +46,17 @@ class _TrialIntroScreenState extends ConsumerState<TrialIntroScreen> {
       _error = null;
     });
 
-    final result = await ref
-        .read(subscriptionControllerProvider.notifier)
-        .showPaywall();
+    final controller = ref.read(subscriptionControllerProvider.notifier);
+    final result = await controller.showPaywall();
 
     if (!mounted) return;
 
     if (result == PaywallResult.purchased || result == PaywallResult.restored) {
+      await controller.refresh();
+      if (mounted && !ref.read(subscriptionControllerProvider).isPremium) {
+        await Future<void>.delayed(const Duration(milliseconds: 350));
+        await controller.refresh();
+      }
       final saved = await _persistProfileAndPlan();
       if (!saved || !mounted) return;
       Navigator.of(context).pop(true);
@@ -88,7 +92,17 @@ class _TrialIntroScreenState extends ConsumerState<TrialIntroScreen> {
         userId: user.uid,
         answers: onboardingData,
       );
+      await _repository.ensureReferralCodeForUser(user.uid);
       await _repository.saveOnboardingProfile(profile);
+      final enteredReferral = (onboardingData['referral_code'] ?? '')
+          .toString()
+          .trim();
+      if (enteredReferral.isNotEmpty) {
+        await _repository.applyReferralCode(
+          userId: user.uid,
+          code: enteredReferral,
+        );
+      }
 
       final plan = await _planService.generateInitialPlan(
         profile,
@@ -167,7 +181,7 @@ class _TrialIntroScreenState extends ConsumerState<TrialIntroScreen> {
                               Icon(
                                 Icons.fitness_center,
                                 size: 60,
-                                color: Color(0xFF222222),
+                                color: _kInk,
                               ),
                               SizedBox(height: 10),
                               Text(
@@ -220,7 +234,7 @@ class _TrialIntroScreenState extends ConsumerState<TrialIntroScreen> {
                     : () => ref
                           .read(subscriptionControllerProvider.notifier)
                           .restorePurchases(),
-                style: TextButton.styleFrom(foregroundColor: Colors.black),
+                style: TextButton.styleFrom(foregroundColor: _kInk),
                 child: const Text('Restore purchases'),
               ),
             ],

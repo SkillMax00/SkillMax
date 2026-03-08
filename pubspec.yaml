@@ -41,6 +41,8 @@ dependencies:
   firebase_core: ^4.4.0
   firebase_auth: ^6.1.4
   cloud_firestore: ^6.1.2
+  in_app_review: ^2.0.11
+  permission_handler: ^12.0.1
 
   # RevenueCat dependencies
   purchases_flutter: ^9.11.0

@@ -47,13 +47,18 @@ class OnboardingPaywallView extends StatelessWidget {
                   ),
                   const SizedBox(height: 24),
                   ElevatedButton(
-                    onPressed: () {
-                      Navigator.of(context).push(
+                    onPressed: () async {
+                      final unlocked = await Navigator.of(context).push<bool>(
                         MaterialPageRoute(
                           builder: (_) =>
                               const SignUpView(showPaywallAfterSignUp: true),
                         ),
                       );
+                      if (unlocked == true && context.mounted) {
+                        Navigator.of(
+                          context,
+                        ).popUntil((route) => route.isFirst);
+                      }
                     },
                     child: const Text('Start Free Trial'),
                   ),
@@ -61,9 +66,7 @@ class OnboardingPaywallView extends StatelessWidget {
                   OutlinedButton(
                     onPressed: () {
                       Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => const LoginView(),
-                        ),
+                        MaterialPageRoute(builder: (_) => const LoginView()),
                       );
                     },
                     child: const Text('I Already Have an Account'),

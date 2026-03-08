@@ -1,0 +1,14 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Flutter",
+      "request": "launch",
+      "type": "dart",
+      "toolArgs": [
+        "--dart-define=PLAN_FUNCTION_URL=https://generateworkoutplan-5gmiy353qq-uc.a.run.app",
+        "--dart-define=COACH_FUNCTION_URL=https://us-central1-skillmax-e5b98.cloudfunctions.net/coachChat"
+      ]
+    }
+  ]
+}

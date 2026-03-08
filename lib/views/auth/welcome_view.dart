@@ -4,9 +4,10 @@ import 'login_view.dart';
 import 'onboarding_flow_view.dart';
 import 'signup_view.dart';
 
-const _kBg = Color(0xFFF7F5F2);
-const _kInk = Color(0xFF0E0E12);
-const _kMuted = Color(0xFF2A2931);
+const _kBlue = Color(0xFF1E628C);
+const _kBlueDeep = Color(0xFF123F5C);
+const _kText = Color(0xFF122433);
+const _kSubtle = Color(0xFF5A7386);
 
 class WelcomeView extends StatelessWidget {
   const WelcomeView({super.key});
@@ -29,102 +30,130 @@ class WelcomeView extends StatelessWidget {
     ).push(MaterialPageRoute(builder: (_) => const SignUpView()));
   }
 
-  Widget _buildPhonePreview(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        return Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 320, maxHeight: 510),
-            child: AspectRatio(
-              aspectRatio: 0.57,
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Colors.black,
-                  borderRadius: BorderRadius.circular(52),
-                  boxShadow: const [
-                    BoxShadow(
-                      color: Color.fromRGBO(0, 0, 0, 0.16),
-                      blurRadius: 22,
-                      offset: Offset(0, 14),
-                    ),
-                  ],
-                ),
-                padding: const EdgeInsets.fromLTRB(10, 10, 10, 14),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(44),
-                  child: Container(
-                    color: const Color(0xFF17161D),
-                    child: Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(
-                            Icons.fitness_center,
-                            color: Colors.white70,
-                            size: 58,
-                          ),
-                          const SizedBox(height: 10),
-                          const Text(
-                            'Temporary image/GIF spot',
-                            style: TextStyle(
-                              color: Colors.white70,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            'Show workout preview here',
-                            style: Theme.of(context).textTheme.bodySmall
-                                ?.copyWith(color: Colors.white54),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
+  Widget _buildHeroCard(BuildContext context) {
+    return Container(
+      constraints: const BoxConstraints(maxHeight: 420),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(34),
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF2474A7), Color(0xFF184E70), Color(0xFF112F45)],
+        ),
+        boxShadow: const [
+          BoxShadow(
+            color: Color.fromRGBO(18, 63, 92, 0.26),
+            blurRadius: 34,
+            offset: Offset(0, 20),
+          ),
+        ],
+      ),
+      child: Stack(
+        children: [
+          Positioned(
+            right: -28,
+            top: -24,
+            child: Container(
+              width: 150,
+              height: 150,
+              decoration: const BoxDecoration(
+                color: Color(0x2FFFFFFF),
+                shape: BoxShape.circle,
               ),
             ),
           ),
-        );
-      },
+          Positioned(
+            left: -40,
+            bottom: -48,
+            child: Container(
+              width: 190,
+              height: 190,
+              decoration: const BoxDecoration(
+                color: Color(0x26FFFFFF),
+                shape: BoxShape.circle,
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: const [
+                    Icon(Icons.bolt_rounded, color: Colors.white, size: 24),
+                    SizedBox(width: 8),
+                    Text(
+                      'SkillMax',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ],
+                ),
+                const Spacer(),
+                Text(
+                  'Adaptive training for real progress',
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w800,
+                    height: 1.12,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'Plans update with your recovery, schedule, and results.',
+                  style: TextStyle(
+                    color: Color(0xE6FFFFFF),
+                    fontSize: 15,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: _kBg,
+      backgroundColor: const Color(0xFFF1F8FD),
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(22, 18, 22, 18),
+          padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const SizedBox(height: 6),
-                    Expanded(child: _buildPhonePreview(context)),
-                    const SizedBox(height: 18),
-                    Text(
-                      'Working out\nmade easy',
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.headlineSmall
-                          ?.copyWith(
-                            fontWeight: FontWeight.w800,
-                            color: _kInk,
-                            fontSize: 48,
-                            height: 1.02,
-                          ),
-                    ),
-                  ],
+              Expanded(child: _buildHeroCard(context)),
+              const SizedBox(height: 22),
+              Text(
+                'Build strength with a plan that adjusts to you',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                  color: _kText,
+                  fontWeight: FontWeight.w800,
                 ),
               ),
+              const SizedBox(height: 8),
+              const Text(
+                'Personalized training, skill progressions, and smarter weekly structure.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: _kSubtle,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(height: 18),
               ElevatedButton(
                 onPressed: () => _startOnboarding(context),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: _kInk,
+                  backgroundColor: _kBlue,
                   foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(vertical: 18),
                   shape: RoundedRectangleBorder(
@@ -133,43 +162,22 @@ class WelcomeView extends StatelessWidget {
                 ),
                 child: const Text('Get Started'),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 10),
               TextButton(
                 onPressed: () => _openLogin(context),
                 style: TextButton.styleFrom(
-                  foregroundColor: _kInk,
+                  foregroundColor: _kBlueDeep,
                   padding: const EdgeInsets.symmetric(vertical: 8),
                 ),
-                child: FittedBox(
-                  fit: BoxFit.scaleDown,
-                  child: Text.rich(
-                    maxLines: 1,
-                    overflow: TextOverflow.fade,
-                    TextSpan(
-                      text: 'Already have an account? ',
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: _kMuted,
-                        fontSize: 15,
-                      ),
-                      children: [
-                        TextSpan(
-                          text: 'Sign In',
-                          style: Theme.of(context).textTheme.bodyMedium
-                              ?.copyWith(
-                                color: _kInk,
-                                fontWeight: FontWeight.w700,
-                                fontSize: 15,
-                              ),
-                        ),
-                      ],
-                    ),
-                  ),
+                child: const Text(
+                  'Already have an account? Sign in',
+                  style: TextStyle(fontWeight: FontWeight.w700),
                 ),
               ),
               TextButton(
                 onPressed: () => _openSignUp(context),
                 style: TextButton.styleFrom(
-                  foregroundColor: const Color(0xFF55555B),
+                  foregroundColor: const Color(0xFF4B667B),
                   padding: const EdgeInsets.symmetric(vertical: 2),
                 ),
                 child: const Text('Skip (Debug)'),
